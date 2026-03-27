@@ -1,0 +1,10 @@
+streamlit>=1.30.0
+google-generativeai>=0.8.0
+requests>=2.31.0
+gtts>=2.5.0
+SpeechRecognition>=3.10.0
+python-dotenv>=1.0.0
+pydantic>=2.5.0
+streamlit-webrtc>=0.47.0
+audio-recorder-streamlit>=0.0.10
+feedparser>=6.0.0
