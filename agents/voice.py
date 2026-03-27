@@ -1,13 +1,30 @@
-"""Voice Agent — Text-to-Speech and Speech-to-Text."""
+"""Voice Agent — Text-to-Speech (ElevenLabs) and Speech-to-Text (Google)."""
 import io
 import os
 import tempfile
 import speech_recognition as sr
-from gtts import gTTS
+from config import ELEVENLABS_API_KEY
 
 
 def text_to_speech(text: str, lang: str = "en") -> bytes:
-    """Convert text to speech audio bytes (MP3)."""
+    """Convert text to speech audio bytes (MP3) using ElevenLabs.
+    Falls back to gTTS if ElevenLabs key is not configured.
+    """
+    if ELEVENLABS_API_KEY:
+        try:
+            from elevenlabs.client import ElevenLabs
+            client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+            audio_generator = client.text_to_speech.convert(
+                voice_id="JBFqnCBsd6RMkjVDRZzb",  # George — clear, professional
+                text=text,
+                model_id="eleven_multilingual_v2",
+            )
+            return b"".join(audio_generator)
+        except Exception as e:
+            print(f"[Voice] ElevenLabs TTS error: {e}. Falling back to gTTS.")
+
+    # Fallback: gTTS
+    from gtts import gTTS
     tts = gTTS(text=text, lang=lang, slow=False)
     buffer = io.BytesIO()
     tts.write_to_fp(buffer)
@@ -27,7 +44,6 @@ def speech_to_text(audio_bytes: bytes) -> str:
     recognizer = sr.Recognizer()
 
     # audio_recorder_streamlit returns WebM audio — write with correct extension
-    # SpeechRecognition uses the extension to determine format
     with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as f:
         f.write(audio_bytes)
         f.flush()
