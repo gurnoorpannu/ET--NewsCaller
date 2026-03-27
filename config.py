@@ -10,8 +10,8 @@ NEWS_API_KEY = os.getenv("NEWS_API_KEY", "YOUR_NEWSAPI_KEY_HERE")
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 
 # Gemini model config
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 # News settings
-MAX_ARTICLES = 20
+MAX_ARTICLES = 10
 DEFAULT_COUNTRY = "in"  # India for ET

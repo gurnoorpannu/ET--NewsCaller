@@ -1,6 +1,7 @@
 """Briefing Agent — generates a personalized news briefing."""
+import json
 from models.schemas import AnalyzedArticle, UserProfile, Briefing
-from utils.llm import ask_llm
+from utils.llm import ask_llm_json
 from datetime import datetime
 
 
@@ -10,22 +11,19 @@ def generate_briefing(
     profile_interpretation: dict,
     top_n: int = 3,
 ) -> Briefing:
-    """
-    Generate a conversational briefing from top articles.
-    This is what gets converted to voice.
-    """
+    """Generate a conversational briefing from top articles in a single LLM call."""
     top_articles = articles[:top_n]
 
-    articles_text = ""
-    for i, a in enumerate(top_articles, 1):
-        articles_text += f"""
-Article {i}: {a.title}
-Source: {a.source}
-Topics: {', '.join(a.topics)}
-Sentiment: {a.sentiment}
-Summary: {a.description or a.content[:300]}
----
-"""
+    articles_text = []
+    for i, a in enumerate(top_articles):
+        articles_text.append({
+            "index": i,
+            "title": a.title,
+            "source": a.source,
+            "topics": a.topics,
+            "sentiment": a.sentiment,
+            "summary": (a.description or a.content)[:300],
+        })
 
     tone = profile_interpretation.get("tone", "professional")
     focus = ", ".join(profile_interpretation.get("focus_areas", ["general"]))
@@ -37,28 +35,32 @@ Tone: {tone}
 Focus on: {focus}
 Depth: {profile.preferred_depth}
 
-Top news articles for this user:
-{articles_text}
+Top news articles:
+{json.dumps(articles_text, indent=2)}
 
-Generate a natural, conversational briefing that:
-1. Starts with a brief personalized greeting (use their name)
-2. For each article (number them):
-   - Summarize the key point in 2-3 sentences
-   - Explain WHY this matters specifically for this user (given their role and interests)
-   - Keep it conversational — this will be read aloud
-3. End with a brief wrap-up inviting them to ask questions
+Return a single JSON object with:
+- "briefing_text": A natural, conversational briefing (under 400 words). Start with a brief personalized greeting using their name. For each article, summarize in 2-3 sentences and explain why it matters for this user. End with an invite to ask questions. NO markdown, NO bullet points — written for voice.
+- "why_it_matters": A JSON array with one short sentence per article explaining relevance to a {profile.role} interested in {', '.join(profile.interests[:3])}.
 
-Keep the total briefing under 400 words. Make it sound natural, like a knowledgeable friend updating you.
-Do NOT use markdown formatting, bullet points, or special characters — this is for voice.
+Example format:
+{{
+  "briefing_text": "Good morning Gurnoor! ...",
+  "why_it_matters": ["Sentence for article 0", "Sentence for article 1", "Sentence for article 2"]
+}}
 """
 
-    summary_text = ask_llm(prompt)
+    try:
+        data = ask_llm_json(prompt)
+        summary_text = data.get("briefing_text", "")
+        why_list = data.get("why_it_matters", [])
 
-    # Extract "why it matters" for each article
-    for i, article in enumerate(top_articles):
-        why_prompt = f"""In one sentence, explain why this news matters to a {profile.role}
-interested in {', '.join(profile.interests[:3])}: "{article.title}" """
-        article.why_it_matters = ask_llm(why_prompt, temperature=0.5).strip()
+        for i, article in enumerate(top_articles):
+            if i < len(why_list):
+                article.why_it_matters = why_list[i]
+
+    except Exception as e:
+        print(f"[Briefing] Error: {e}")
+        summary_text = f"Good morning {profile.name}! Here are your top stories today."
 
     briefing = Briefing(
         greeting=f"Good morning, {profile.name}!",
@@ -67,5 +69,5 @@ interested in {', '.join(profile.interests[:3])}: "{article.title}" """
         generated_at=datetime.now().isoformat(),
     )
 
-    print(f"[Briefing] Generated briefing with {len(top_articles)} articles")
+    print(f"[Briefing] Generated briefing with {len(top_articles)} articles in 1 API call")
     return briefing

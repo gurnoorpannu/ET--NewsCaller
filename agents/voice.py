@@ -1,6 +1,8 @@
-"""Voice Agent — Text-to-Speech (ElevenLabs) and Speech-to-Text (Google)."""
+"""Voice Agent — Text-to-Speech (ElevenLabs/gTTS) and Speech-to-Text (Google)."""
 import io
 import os
+import wave
+import struct
 import tempfile
 import speech_recognition as sr
 from config import ELEVENLABS_API_KEY
@@ -32,43 +34,74 @@ def text_to_speech(text: str, lang: str = "en") -> bytes:
     return buffer.read()
 
 
+def _webm_to_wav_ffmpeg(webm_path: str, wav_path: str) -> bool:
+    """Try converting WebM to WAV using ffmpeg. Returns True if successful."""
+    ret = os.system(f'ffmpeg -y -i "{webm_path}" -ar 16000 -ac 1 "{wav_path}" -loglevel quiet 2>/dev/null')
+    return ret == 0 and os.path.exists(wav_path)
+
+
+def _wav_from_raw_pcm(audio_bytes: bytes) -> bytes:
+    """Wrap raw bytes in a minimal WAV header as a last-resort fallback."""
+    # 16-bit PCM, 16000 Hz, mono
+    sample_rate = 16000
+    num_channels = 1
+    bits_per_sample = 16
+    num_frames = len(audio_bytes) // (bits_per_sample // 8)
+
+    buffer = io.BytesIO()
+    with wave.open(buffer, 'wb') as wf:
+        wf.setnchannels(num_channels)
+        wf.setsampwidth(bits_per_sample // 8)
+        wf.setframerate(sample_rate)
+        wf.writeframes(audio_bytes)
+    buffer.seek(0)
+    return buffer.read()
+
+
 def speech_to_text(audio_bytes: bytes) -> str:
     """Convert audio bytes to text using Google's free STT.
 
-    Handles WebM/OGG from audio_recorder_streamlit by writing to a temp file
-    and letting SpeechRecognition + ffmpeg handle format detection.
+    Tries ffmpeg conversion first, falls back to treating
+    audio as raw PCM if ffmpeg is not installed.
     """
     if not audio_bytes:
         return ""
 
     recognizer = sr.Recognizer()
 
-    # audio_recorder_streamlit returns WebM audio — write with correct extension
+    # Write webm to temp file
     with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as f:
         f.write(audio_bytes)
         f.flush()
-        temp_path = f.name
+        webm_path = f.name
 
-    # Convert to WAV using ffmpeg (required for SpeechRecognition)
-    wav_path = temp_path.replace(".webm", ".wav")
+    wav_path = webm_path.replace(".webm", ".wav")
+
     try:
-        os.system(f'ffmpeg -y -i "{temp_path}" -ar 16000 -ac 1 "{wav_path}" -loglevel quiet')
+        # Try ffmpeg first (best quality)
+        if _webm_to_wav_ffmpeg(webm_path, wav_path):
+            with sr.AudioFile(wav_path) as source:
+                audio = recognizer.record(source)
+        else:
+            # ffmpeg not available — try treating audio as raw PCM in a WAV wrapper
+            print("[Voice] ffmpeg not found, attempting raw PCM fallback...")
+            wav_bytes = _wav_from_raw_pcm(audio_bytes)
+            with sr.AudioFile(io.BytesIO(wav_bytes)) as source:
+                audio = recognizer.record(source)
 
-        with sr.AudioFile(wav_path) as source:
-            audio = recognizer.record(source)
         text = recognizer.recognize_google(audio)
         return text
+
     except sr.UnknownValueError:
         return ""
     except sr.RequestError as e:
-        print(f"[Voice] STT error: {e}")
+        print(f"[Voice] STT network error: {e}")
         return ""
     except Exception as e:
-        print(f"[Voice] Error processing audio: {e}")
+        print(f"[Voice] STT error: {e}")
         return ""
     finally:
-        # Clean up temp files
-        for path in [temp_path, wav_path]:
+        for path in [webm_path, wav_path]:
             try:
                 os.unlink(path)
             except OSError:

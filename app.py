@@ -255,20 +255,23 @@ def render_briefing_page():
                 pause_threshold=2.0,
             )
             if audio_bytes:
-                user_text = speech_to_text(audio_bytes)
+                with st.spinner("Transcribing..."):
+                    user_text = speech_to_text(audio_bytes)
                 if user_text:
                     st.success(f"Heard: {user_text}")
                     process_user_question(user_text)
                 else:
-                    st.warning("Couldn't understand. Try again or type below.")
+                    st.warning("⚠️ Couldn't transcribe audio. ffmpeg may not be installed. Type your question below instead.")
         except ImportError:
             st.info("Voice input requires audio-recorder-streamlit package.")
 
     with col_text:
-        user_input = st.text_input("Or type your question:", key="chat_input", placeholder="e.g., Tell me more about article 1")
+        st.text_input("Or type your question:", key="chat_input", placeholder="e.g., Tell me more about article 1")
         if st.button("Send", key="send_btn"):
-            if user_input:
-                process_user_question(user_input)
+            # Read directly from session_state — reliable after button click rerun
+            question = st.session_state.get("chat_input", "").strip()
+            if question:
+                process_user_question(question)
 
     # Sidebar controls
     with st.sidebar:
@@ -303,13 +306,17 @@ def process_user_question(question: str):
     # Add user message
     st.session_state.chat_history.append({"role": "user", "content": question})
 
-    # Get AI response
-    response = answer_question(
-        question=question,
-        briefing=briefing,
-        profile=profile,
-        chat_history=st.session_state.chat_history,
-    )
+    try:
+        # Get AI response
+        response = answer_question(
+            question=question,
+            briefing=briefing,
+            profile=profile,
+            chat_history=st.session_state.chat_history,
+        )
+    except Exception as e:
+        response = f"Sorry, I couldn't process that right now. ({e})"
+        print(f"[Q&A] Error: {e}")
 
     # Add AI response
     st.session_state.chat_history.append({"role": "assistant", "content": response})

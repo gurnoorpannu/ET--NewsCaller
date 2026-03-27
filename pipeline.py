@@ -1,10 +1,14 @@
 """Pipeline orchestrator — connects all agents in sequence."""
+import time
 from models.schemas import UserProfile, Briefing
 from agents.ingestion import ingest
 from agents.understanding import understand
 from agents.profiling import interpret_profile
 from agents.personalization import personalize
 from agents.briefing import generate_briefing
+
+# Small gap between LLM calls to avoid rate limiting (gemini-2.5-flash: 10 RPM free tier)
+_CALL_GAP = 6  # seconds between pipeline steps
 
 
 def run_pipeline(profile: UserProfile) -> Briefing:
@@ -20,7 +24,7 @@ def run_pipeline(profile: UserProfile) -> Briefing:
     print("🚀 Starting MyET AI Pipeline")
     print("=" * 50)
 
-    # Step 1: Ingest
+    # Step 1: Ingest (no LLM call)
     print("\n[1/5] Ingesting news...")
     articles = ingest(interests=profile.interests)
     if not articles:
@@ -29,19 +33,22 @@ def run_pipeline(profile: UserProfile) -> Briefing:
             summary_text="No articles available at the moment.",
         )
 
-    # Step 2: Understand
+    # Step 2: Understand (1 LLM call)
     print("\n[2/5] Analyzing articles...")
     analyzed = understand(articles)
+    time.sleep(_CALL_GAP)
 
-    # Step 3: Profile interpretation
+    # Step 3: Profile interpretation (1 LLM call)
     print("\n[3/5] Interpreting your profile...")
     profile_data = interpret_profile(profile)
+    time.sleep(_CALL_GAP)
 
-    # Step 4: Personalize
+    # Step 4: Personalize (1 LLM call)
     print("\n[4/5] Personalizing for you...")
     ranked = personalize(analyzed, profile, profile_data)
+    time.sleep(_CALL_GAP)
 
-    # Step 5: Generate briefing
+    # Step 5: Generate briefing (1 LLM call)
     print("\n[5/5] Generating your briefing...")
     briefing = generate_briefing(ranked, profile, profile_data)
 
