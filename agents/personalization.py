@@ -30,9 +30,9 @@ def personalize(
 
 User Profile:
 - Role: {profile.role}
-- Interests: {', '.join(profile.interests)}
-- Priority Topics: {', '.join(profile_interpretation.get('priority_topics', []))}
-- Focus Areas: {', '.join(profile_interpretation.get('focus_areas', []))}
+- Interests: {', '.join(profile.interests) if profile.interests else 'general news'}
+- Priority Topics: {', '.join(profile_interpretation.get('priority_topics', [])) or 'general'}
+- Focus Areas: {', '.join(profile_interpretation.get('focus_areas', [])) or 'general'}
 
 Articles:
 {json.dumps(article_summaries, indent=2)}
@@ -43,12 +43,7 @@ Example: [{{"index": 0, "score": 0.85}}, {{"index": 1, "score": 0.3}}]
 """
 
     try:
-        raw = ask_llm_json(prompt)
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
-        if raw.endswith("```"):
-            raw = raw[:-3]
-        scores = json.loads(raw.strip())
+        scores = ask_llm_json(prompt)
 
         # Apply scores
         score_map = {s["index"]: s["score"] for s in scores}
@@ -62,5 +57,6 @@ Example: [{{"index": 0, "score": 0.85}}, {{"index": 1, "score": 0.3}}]
 
     # Sort by relevance
     ranked = sorted(articles, key=lambda a: a.relevance_score, reverse=True)
-    print(f"[Personalization] Ranked {len(ranked)} articles. Top: '{ranked[0].title[:50]}' ({ranked[0].relevance_score})")
+    if ranked:
+        print(f"[Personalization] Ranked {len(ranked)} articles. Top: '{ranked[0].title[:50]}' ({ranked[0].relevance_score})")
     return ranked

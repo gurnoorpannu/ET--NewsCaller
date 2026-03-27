@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MyET AI — Voice News Companion</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- ===== SCREEN 1: PROFILE SETUP ===== -->
+<div id="screen-profile" class="screen active">
+    <div class="profile-container">
+        <div class="logo-section">
+            <div class="logo-icon">
+                <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+                    <circle cx="24" cy="24" r="24" fill="url(#grad1)"/>
+                    <path d="M16 20C16 20 20 28 24 28C28 28 32 20 32 20" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+                    <circle cx="18" cy="18" r="2" fill="white"/>
+                    <circle cx="30" cy="18" r="2" fill="white"/>
+                    <defs>
+                        <linearGradient id="grad1" x1="0" y1="0" x2="48" y2="48">
+                            <stop offset="0%" stop-color="#6c5ce7"/>
+                            <stop offset="100%" stop-color="#a29bfe"/>
+                        </linearGradient>
+                    </defs>
+                </svg>
+            </div>
+            <h1>MyET AI</h1>
+            <p class="subtitle">Your Personal Voice News Companion</p>
+        </div>
+
+        <div class="profile-form">
+            <div class="form-group">
+                <label>What's your name?</label>
+                <input type="text" id="input-name" placeholder="e.g., Gurnoor" autocomplete="off">
+            </div>
+
+            <div class="form-group">
+                <label>What best describes you?</label>
+                <div class="role-grid">
+                    <button class="role-chip" data-role="Investor / Trader">📈 Investor</button>
+                    <button class="role-chip" data-role="Tech Professional">💻 Tech Pro</button>
+                    <button class="role-chip" data-role="Startup Founder">🚀 Founder</button>
+                    <button class="role-chip" data-role="Student">🎓 Student</button>
+                    <button class="role-chip" data-role="Business Executive">💼 Executive</button>
+                    <button class="role-chip" data-role="General Reader">📰 Reader</button>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>Topics you care about</label>
+                <div class="interest-grid">
+                    <button class="interest-chip" data-interest="technology">Technology</button>
+                    <button class="interest-chip selected" data-interest="ai / machine learning">AI / ML</button>
+                    <button class="interest-chip" data-interest="stock markets">Markets</button>
+                    <button class="interest-chip" data-interest="startups">Startups</button>
+                    <button class="interest-chip" data-interest="economy / finance">Finance</button>
+                    <button class="interest-chip" data-interest="crypto / blockchain">Crypto</button>
+                    <button class="interest-chip" data-interest="geopolitics">Geopolitics</button>
+                    <button class="interest-chip" data-interest="healthcare">Healthcare</button>
+                    <button class="interest-chip" data-interest="climate / energy">Climate</button>
+                    <button class="interest-chip" data-interest="science">Science</button>
+                </div>
+            </div>
+
+            <button id="btn-start" class="btn-primary" onclick="startExperience()">
+                Start My Briefing
+                <span class="btn-arrow">→</span>
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- ===== SCREEN 2: LOADING / PIPELINE ===== -->
+<div id="screen-loading" class="screen">
+    <div class="loading-container">
+        <div class="loading-orb">
+            <div class="orb-ring"></div>
+            <div class="orb-ring delay-1"></div>
+            <div class="orb-ring delay-2"></div>
+            <div class="orb-core"></div>
+        </div>
+        <h2 id="loading-text">Preparing your briefing...</h2>
+        <div class="pipeline-steps">
+            <div class="step" id="step-1"><span class="step-icon">📡</span> Fetching news</div>
+            <div class="step" id="step-2"><span class="step-icon">🔍</span> Analyzing articles</div>
+            <div class="step" id="step-3"><span class="step-icon">🧠</span> Understanding you</div>
+            <div class="step" id="step-4"><span class="step-icon">🎯</span> Personalizing</div>
+            <div class="step" id="step-5"><span class="step-icon">🎙️</span> Generating briefing</div>
+        </div>
+    </div>
+</div>
+
+<!-- ===== SCREEN 3: VOICE CALL INTERFACE ===== -->
+<div id="screen-call" class="screen">
+    <!-- Top bar -->
+    <div class="call-topbar">
+        <div class="topbar-left">
+            <div class="ai-avatar-small">
+                <svg width="28" height="28" viewBox="0 0 48 48" fill="none">
+                    <circle cx="24" cy="24" r="24" fill="url(#grad2)"/>
+                    <path d="M16 20C16 20 20 28 24 28C28 28 32 20 32 20" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+                    <circle cx="18" cy="18" r="2" fill="white"/>
+                    <circle cx="30" cy="18" r="2" fill="white"/>
+                    <defs>
+                        <linearGradient id="grad2" x1="0" y1="0" x2="48" y2="48">
+                            <stop offset="0%" stop-color="#6c5ce7"/>
+                            <stop offset="100%" stop-color="#a29bfe"/>
+                        </linearGradient>
+                    </defs>
+                </svg>
+            </div>
+            <div>
+                <div class="topbar-name">MyET AI</div>
+                <div class="topbar-status" id="call-status">Connected</div>
+            </div>
+        </div>
+        <div class="topbar-right">
+            <span id="call-timer">00:00</span>
+            <button class="btn-icon" onclick="showArticles()" title="View Articles">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h12"/></svg>
+            </button>
+        </div>
+    </div>
+
+    <!-- Main call area -->
+    <div class="call-body">
+        <!-- Waveform visualization -->
+        <div class="waveform-container" id="waveform-container">
+            <canvas id="waveform" width="400" height="120"></canvas>
+        </div>
+
+        <!-- AI speaking indicator -->
+        <div class="ai-speaking-section">
+            <div class="ai-avatar-large" id="ai-avatar">
+                <div class="avatar-pulse"></div>
+                <svg width="64" height="64" viewBox="0 0 48 48" fill="none">
+                    <circle cx="24" cy="24" r="24" fill="url(#grad3)"/>
+                    <path d="M16 20C16 20 20 28 24 28C28 28 32 20 32 20" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+                    <circle cx="18" cy="18" r="2" fill="white"/>
+                    <circle cx="30" cy="18" r="2" fill="white"/>
+                    <defs>
+                        <linearGradient id="grad3" x1="0" y1="0" x2="48" y2="48">
+                            <stop offset="0%" stop-color="#6c5ce7"/>
+                            <stop offset="100%" stop-color="#a29bfe"/>
+                        </linearGradient>
+                    </defs>
+                </svg>
+            </div>
+            <div class="ai-label" id="ai-label">AI is ready</div>
+        </div>
+
+        <!-- Transcript area -->
+        <div class="transcript-area" id="transcript-area">
+            <div class="transcript-placeholder">
+                Your conversation will appear here...
+            </div>
+        </div>
+    </div>
+
+    <!-- Bottom controls -->
+    <div class="call-controls">
+        <button class="btn-control" onclick="playBriefing()" id="btn-briefing" title="Play Briefing">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+        </button>
+
+        <button class="btn-mic" id="btn-mic" onmousedown="startRecording()" onmouseup="stopRecording()" ontouchstart="startRecording()" ontouchend="stopRecording()">
+            <div class="mic-ripple" id="mic-ripple"></div>
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                <line x1="12" y1="19" x2="12" y2="23"/>
+                <line x1="8" y1="23" x2="16" y2="23"/>
+            </svg>
+        </button>
+
+        <button class="btn-control btn-end" onclick="endCall()" title="End Call">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85-.18.18-.43.28-.7.28-.28 0-.53-.11-.71-.29L.29 13.08c-.18-.17-.29-.42-.29-.7 0-.28.11-.53.29-.71C3.34 8.78 7.46 7 12 7s8.66 1.78 11.71 4.67c.18.18.29.43.29.71 0 .28-.11.53-.29.71l-2.48 2.48c-.18.18-.43.29-.71.29-.27 0-.52-.1-.7-.28-.79-.73-1.68-1.36-2.66-1.85-.33-.16-.56-.5-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z"/></svg>
+        </button>
+    </div>
+
+    <!-- Articles side panel -->
+    <div class="articles-panel" id="articles-panel">
+        <div class="panel-header">
+            <h3>Your Top Stories</h3>
+            <button class="btn-close-panel" onclick="hideArticles()">✕</button>
+        </div>
+        <div class="panel-body" id="articles-list">
+        </div>
+    </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

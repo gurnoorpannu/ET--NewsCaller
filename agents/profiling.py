@@ -1,5 +1,4 @@
 """Profiling Agent — interprets user profile into actionable preferences."""
-import json
 from models.schemas import UserProfile
 from utils.llm import ask_llm_json
 
@@ -26,12 +25,7 @@ Return JSON with:
 """
 
     try:
-        raw = ask_llm_json(prompt)
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
-        if raw.endswith("```"):
-            raw = raw[:-3]
-        data = json.loads(raw.strip())
+        data = ask_llm_json(prompt)
         print(f"[Profiling] Interpreted profile for {profile.name}: {data.get('priority_topics', [])}")
         return data
     except Exception as e:

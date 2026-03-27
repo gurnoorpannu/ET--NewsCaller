@@ -56,6 +56,7 @@ def init_session_state():
         "briefing": None,
         "chat_history": [],
         "briefing_audio": None,
+        "last_response_audio": None,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -145,8 +146,8 @@ def render_loading_page():
 
         if not articles:
             st.error("Could not fetch any articles. Check your API keys or internet connection.")
+            st.session_state.step = "profile"
             if st.button("← Go Back"):
-                st.session_state.step = "profile"
                 st.rerun()
             return
 
@@ -316,9 +317,10 @@ def process_user_question(question: str):
     # Generate voice response
     try:
         audio = text_to_speech(response)
-        st.session_state["last_response_audio"] = audio
-    except Exception:
-        pass
+        st.session_state.last_response_audio = audio
+    except Exception as e:
+        print(f"[Voice] TTS error for Q&A response: {e}")
+        st.session_state.last_response_audio = None
 
     st.rerun()
 

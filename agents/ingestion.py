@@ -61,6 +61,8 @@ def fetch_from_newsapi(query: str = None, category: str = "general") -> list[Art
 def fetch_from_rss(feed_urls: list[str] = None) -> list[Article]:
     """Fetch articles from RSS feeds."""
     feeds = feed_urls or RSS_FEEDS
+    if not feeds:
+        return []
     articles = []
 
     for feed_url in feeds:

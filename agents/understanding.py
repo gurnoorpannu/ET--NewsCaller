@@ -1,5 +1,4 @@
 """Understanding Agent — extracts topics, entities, sentiment from articles."""
-import json
 from models.schemas import Article, AnalyzedArticle
 from utils.llm import ask_llm_json
 
@@ -19,17 +18,7 @@ Return JSON with these fields:
 """
 
     try:
-        raw = ask_llm_json(prompt)
-        # Clean markdown fences if present
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
-        if raw.endswith("```"):
-            raw = raw[:-3]
-        raw = raw.strip()
-
-        data = json.loads(raw)
-
+        data = ask_llm_json(prompt)
         return AnalyzedArticle(
             title=article.title,
             description=article.description,

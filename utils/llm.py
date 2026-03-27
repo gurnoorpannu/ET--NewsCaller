@@ -1,4 +1,6 @@
 """Gemini LLM wrapper."""
+import re
+import json
 import google.generativeai as genai
 from config import GEMINI_API_KEY, GEMINI_MODEL
 
@@ -18,8 +20,18 @@ def ask_llm(prompt: str, temperature: float = 0.7) -> str:
     return response.text
 
 
-def ask_llm_json(prompt: str, temperature: float = 0.3) -> str:
-    """Send a prompt expecting JSON back. Returns raw text (caller parses)."""
+def _strip_markdown_fences(text: str) -> str:
+    """Remove markdown code fences from LLM output."""
+    text = text.strip()
+    # Remove ```json ... ``` or ``` ... ```
+    match = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    return text
+
+
+def ask_llm_json(prompt: str, temperature: float = 0.3) -> dict | list:
+    """Send a prompt expecting JSON back. Returns parsed Python object."""
     full_prompt = prompt + "\n\nRespond ONLY with valid JSON. No markdown, no explanation."
     response = _model.generate_content(
         full_prompt,
@@ -27,4 +39,6 @@ def ask_llm_json(prompt: str, temperature: float = 0.3) -> str:
             temperature=temperature,
         ),
     )
-    return response.text.strip()
+    raw = response.text.strip()
+    raw = _strip_markdown_fences(raw)
+    return json.loads(raw)
