@@ -13,6 +13,6 @@ ELEVENLABS_AGENT_ID = os.getenv("ELEVENLABS_AGENT_ID", "")
 # Gemini model config
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
-# News settings
-MAX_ARTICLES = 10
+# News settings (default 3 for faster local testing; set MAX_ARTICLES in .env for demos/prod)
+MAX_ARTICLES = max(1, int(os.getenv("MAX_ARTICLES", "3")))
 DEFAULT_COUNTRY = "in"  # India for ET

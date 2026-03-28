@@ -797,33 +797,41 @@ SYM_DONE    = "✓"
 SYM_ERROR   = "✗"
 
 
-def _stage_html(idx: int, statuses: list, details: list) -> str:
+def _stage_html(statuses: list, details: list) -> str:
     """
     Render the pipeline log HTML.
     statuses: list of 'pending'|'running'|'done'|'error' strings
     details:  list of detail strings (shown in right column)
+
+    HTML must not be indented with leading spaces on each line: Streamlit's
+    Markdown parser treats 4+ space indents as code blocks, which shows raw
+    tags instead of rendering them.
     """
-    rows_html = ""
+    rows_parts: list[str] = []
     for i, (label, _) in enumerate(PIPELINE_STAGES):
         st_str = statuses[i]
         sym = {"pending": SYM_PENDING, "running": SYM_RUNNING,
                "done": SYM_DONE, "error": SYM_ERROR}.get(st_str, SYM_PENDING)
-        detail = details[i] or ""
-        rows_html += f"""
-        <div class="stage-row">
-            <span class="stage-status {st_str}">{sym}</span>
-            <span class="stage-name {st_str}">{i+1}. {label}</span>
-            <span class="stage-detail {st_str}">{detail}</span>
-        </div>"""
-
-    return f"""
-    <div class="pipeline-log">
-        <div class="pipeline-log-header">
-            <span>Pipeline</span>
-            <span>{sum(1 for s in statuses if s == 'done')}/{len(PIPELINE_STAGES)} complete</span>
-        </div>
-        {rows_html}
-    </div>"""
+        detail_safe = html_lib.escape(details[i] or "")
+        rows_parts.append(
+            f'<div class="stage-row">'
+            f'<span class="stage-status {st_str}">{sym}</span>'
+            f'<span class="stage-name {st_str}">{i + 1}. {html_lib.escape(label)}</span>'
+            f'<span class="stage-detail {st_str}">{detail_safe}</span>'
+            f"</div>"
+        )
+    rows_html = "".join(rows_parts)
+    done_n = sum(1 for s in statuses if s == "done")
+    total_n = len(PIPELINE_STAGES)
+    return (
+        f'<div class="pipeline-log">'
+        f'<div class="pipeline-log-header">'
+        f"<span>Pipeline</span>"
+        f"<span>{done_n}/{total_n} complete</span>"
+        f"</div>"
+        f"{rows_html}"
+        f"</div>"
+    )
 
 
 def render_loading_page():
@@ -863,7 +871,7 @@ def render_loading_page():
     log_placeholder = st.empty()
 
     def update_log():
-        log_placeholder.markdown(_stage_html(0, statuses, details), unsafe_allow_html=True)
+        log_placeholder.markdown(_stage_html(statuses, details), unsafe_allow_html=True)
 
     update_log()
 
