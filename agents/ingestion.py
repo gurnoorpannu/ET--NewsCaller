@@ -1,4 +1,5 @@
 """Ingestion Agent — fetches news articles from NewsAPI and RSS feeds."""
+import math
 import requests
 import feedparser
 from models.schemas import Article
@@ -15,7 +16,7 @@ RSS_FEEDS = [
 
 def fetch_from_newsapi(query: str = None, category: str = "general") -> list[Article]:
     """Fetch articles from NewsAPI."""
-    if NEWS_API_KEY == "YOUR_NEWSAPI_KEY_HERE":
+    if not NEWS_API_KEY or NEWS_API_KEY == "YOUR_NEWSAPI_KEY_HERE":
         return []
 
     try:
@@ -68,7 +69,8 @@ def fetch_from_rss(feed_urls: list[str] = None) -> list[Article]:
     for feed_url in feeds:
         try:
             feed = feedparser.parse(feed_url)
-            for entry in feed.entries[:MAX_ARTICLES // len(feeds)]:
+            per_feed = math.ceil(MAX_ARTICLES / len(feeds))
+            for entry in feed.entries[:per_feed]:
                 articles.append(Article(
                     title=entry.get("title", ""),
                     description=entry.get("summary", ""),

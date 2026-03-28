@@ -1,10 +1,9 @@
 """MyET AI + Voice Companion — Streamlit App."""
+import hashlib
+import html as html_lib  # for escaping RSS/LLM content in unsafe_allow_html blocks
 import streamlit as st
 from datetime import datetime
 from models.schemas import UserProfile
-from pipeline import run_pipeline
-from agents.voice import text_to_speech, speech_to_text
-from agents.conversation import answer_question
 
 # --- Page Config ---
 st.set_page_config(
@@ -592,16 +591,19 @@ SUGGESTED_PILLS = ["Technology", "AI / Machine Learning", "Stock Markets",
 def init_session_state():
     """Initialize all session state variables with defaults."""
     defaults = {
-        "step": "profile",
+        "step": "profile",         # profile -> loading -> briefing
         "profile": None,
         "briefing": None,
         "chat_history": [],
         "briefing_audio": None,
         "last_response_audio": None,
-        # Role selector: stores the chosen role string
+        # Role/interest selectors (profile page state)
         "selected_role": ROLES[0][0],
-        # Interests: stores the set of selected interest strings
         "selected_interests": {"Technology", "AI / Machine Learning"},
+        # Pipeline guard: prevents double execution on Streamlit reruns
+        "pipeline_running": False,
+        # Audio dedup: skip reprocessing same recording on every rerun
+        "last_audio_hash": None,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -836,6 +838,15 @@ def render_loading_page():
     """, unsafe_allow_html=True)
 
     profile = st.session_state.profile
+
+    # Guard: if a rerun fires while the pipeline is already running
+    # (e.g. browser heartbeat), don't start a second execution
+    if st.session_state.get("pipeline_running"):
+        st.spinner("Pipeline is running...")
+        return
+
+    st.session_state.pipeline_running = True
+
     st.markdown(
         f'<p style="font-family:\'IBM Plex Mono\',monospace;font-size:0.8rem;color:#8a8278;">'
         f'Building briefing for {profile.name} &mdash; {profile.role}</p>',
@@ -866,6 +877,7 @@ def render_loading_page():
             statuses[0] = "error"
             details[0]  = "no articles returned"
             update_log()
+            st.session_state.pipeline_running = False
             st.error("Could not fetch articles. Check API keys or internet connection.")
             if st.button("← Back to profile"):
                 st.session_state.step = "profile"
@@ -925,10 +937,12 @@ def render_loading_page():
         update_log()
 
         # ── TTS (not a named pipeline stage) ───────────────────────────────
+        from agents.voice import text_to_speech
         audio_bytes = text_to_speech(briefing.summary_text)
 
         st.session_state.briefing       = briefing
         st.session_state.briefing_audio = audio_bytes
+        st.session_state.pipeline_running = False
         st.session_state.step           = "briefing"
         st.rerun()
 
@@ -939,6 +953,7 @@ def render_loading_page():
                 statuses[i] = "error"
                 details[i]  = str(e)[:40]
         update_log()
+        st.session_state.pipeline_running = False
         st.error(f"Pipeline error: {e}")
         if st.button("← Back to profile"):
             st.session_state.step = "profile"
@@ -1070,8 +1085,6 @@ def render_briefing_page():
         render_article_card(i, article)
 
     # ── Q&A section ──────────────────────────────────────────────────────────
-    # Design decision: persistent message thread (not collapsible) so users
-    # always see the full conversation context while formulating follow-ups.
     st.markdown('<div class="section-label">Ask a follow-up</div>', unsafe_allow_html=True)
     st.markdown('<p style="font-family:\'Source Serif 4\',serif;font-style:italic;font-size:0.82rem;color:#4a4440;margin-bottom:10px;">Ask about any story, request context, or explore a topic further.</p>', unsafe_allow_html=True)
 
@@ -1083,23 +1096,31 @@ def render_briefing_page():
     with col_voice:
         try:
             from audio_recorder_streamlit import audio_recorder
+            from agents.voice import speech_to_text
             # Streamlit limitation: audio_recorder renders its own button with
             # no CSS class hook; we wrap it in a div for minimal styling.
             st.markdown('<div style="margin-top:4px;">', unsafe_allow_html=True)
-            audio_bytes = audio_recorder(
+            recorded = audio_recorder(
                 text="Speak",
                 recording_color="#c8a96e",
                 neutral_color="#4a4440",
                 pause_threshold=2.0,
             )
             st.markdown('</div>', unsafe_allow_html=True)
-            if audio_bytes:
-                with st.spinner("Transcribing..."):
-                    user_text = speech_to_text(audio_bytes)
-                if user_text:
-                    process_user_question(user_text)
-                else:
-                    st.caption("Could not transcribe. ffmpeg may not be installed.")
+            if recorded:
+                # Dedup: audio_recorder returns the same bytes on every Streamlit
+                # rerun until new audio is recorded — skip already-processed audio
+                audio_hash = hashlib.md5(recorded).hexdigest()
+                if audio_hash != st.session_state.get("last_audio_hash"):
+                    st.session_state.last_audio_hash = audio_hash
+                    with st.spinner("Transcribing..."):
+                        user_text = speech_to_text(recorded)
+                    if user_text:
+                        # Pass raw audio bytes — Gemini Live uses them directly,
+                        # bypassing Google Free STT quality issues
+                        process_user_question(user_text, audio_bytes=recorded)
+                    else:
+                        st.caption("Could not transcribe. ffmpeg may not be installed.")
         except ImportError:
             st.caption("Voice input requires audio-recorder-streamlit.")
 
@@ -1136,19 +1157,57 @@ def render_briefing_page():
 # Q&A HANDLER
 # =============================================================================
 
-def process_user_question(question: str):
-    """Append user message, get AI response, generate TTS, rerun."""
+def process_user_question(question: str, audio_bytes: bytes = None):
+    """
+    Process a user question — Gemini Live path (audio) with text fallback.
+
+    audio_bytes: raw WebM from audio_recorder_streamlit (optional).
+                 If provided, tries Gemini Live for voice-in/voice-out.
+    question:    text of the question (always required for chat history display).
+    """
     briefing = st.session_state.briefing
     profile  = st.session_state.profile
 
+    # Snapshot history BEFORE appending current question.
+    # answer_question() adds "User's question: {question}" separately,
+    # so passing the post-append history would make the question appear twice.
+    history_snapshot = list(st.session_state.chat_history)
     st.session_state.chat_history.append({"role": "user", "content": question})
 
+    # ── Path A: Gemini Live (audio in → audio out) ─────────────────────────
+    # Only attempted when audio bytes are present (voice input was used).
+    # Eliminates the 3-step STT→LLM→TTS chain with a single WebSocket session.
+    if audio_bytes:
+        try:
+            from agents.gemini_live import gemini_live_answer
+            with st.spinner("MyET AI is responding..."):
+                mp3_bytes, response_text = gemini_live_answer(
+                    user_audio_webm=audio_bytes,
+                    briefing=briefing,
+                    profile=profile,
+                    chat_history=history_snapshot,
+                )
+            display_text = response_text if response_text else "[Voice response — press play above]"
+            st.session_state.chat_history.append({"role": "assistant", "content": display_text})
+            st.session_state.last_response_audio = mp3_bytes
+            st.rerun()
+            return
+        except RuntimeError as e:
+            # Known failure modes: no ffmpeg, no API key, timeout
+            st.warning(f"Voice Q&A unavailable ({e}). Using text mode.")
+        except Exception as e:
+            print(f"[GeminiLive] Unexpected error: {e}")
+            st.warning("Voice Q&A error. Using text mode.")
+
+    # ── Path B: Text fallback (original answer_question + TTS chain) ───────
+    from agents.conversation import answer_question
+    from agents.voice import text_to_speech
     try:
         response = answer_question(
             question=question,
             briefing=briefing,
             profile=profile,
-            chat_history=st.session_state.chat_history,
+            chat_history=history_snapshot,  # snapshot without current question
         )
     except Exception as e:
         response = f"Unable to process your question. ({e})"
