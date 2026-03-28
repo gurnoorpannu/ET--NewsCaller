@@ -1,9 +1,10 @@
 """MyET AI + Voice Companion — Streamlit App."""
-import hashlib
 import html as html_lib  # for escaping RSS/LLM content in unsafe_allow_html blocks
 import streamlit as st
-from datetime import datetime
-from models.schemas import UserProfile
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+from models.schemas import UserProfile, ScheduledCall
+from shared_state import scheduled_calls, calls_lock
 
 # --- Page Config ---
 st.set_page_config(
@@ -602,11 +603,8 @@ def init_session_state():
         "selected_interests": {"Technology", "AI / Machine Learning"},
         # Pipeline guard: prevents double execution on Streamlit reruns
         "pipeline_running": False,
-        # Audio dedup: skip reprocessing same recording on every rerun
-        "last_audio_hash": None,
-        # Voice provider toggle: "gemini_live" or "elevenlabs"
-        # Controls which AI handles Q&A voice responses
-        "voice_provider": "gemini_live",
+        # Phone number persisted across reruns so user doesn't re-type after scheduling
+        "call_phone_number": "",
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -1059,6 +1057,185 @@ def render_chat_thread() -> None:
     st.markdown(f'<div class="chat-thread">{thread_inner}</div>', unsafe_allow_html=True)
 
 
+# =============================================================================
+# CALLING UI HELPERS
+# =============================================================================
+
+def _handle_call_now(phone: str, briefing, profile) -> None:
+    """
+    Validate the phone number and immediately place a Twilio outbound call.
+
+    On success: creates a ScheduledCall record with status="calling" and
+    stores it in shared_state so the status list updates.
+    On failure: shows an error in the UI — never raises.
+
+    Args:
+        phone:    E.164-format phone number from the UI text input.
+        briefing: Current Briefing object (summary_text injected into Tony).
+        profile:  UserProfile for ElevenLabs context priming.
+    """
+    from agents.twilio_caller import initiate_call
+    from config import TWILIO_ACCOUNT_SID
+
+    # Basic validation before attempting any API call
+    if not phone.strip():
+        st.warning("Enter a phone number in E.164 format, e.g. +919876543210.")
+        return
+    if not TWILIO_ACCOUNT_SID:
+        st.error(
+            "Twilio not configured. Add TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, "
+            "and TWILIO_FROM_NUMBER to your .env file."
+        )
+        return
+
+    with st.spinner("Placing call…"):
+        try:
+            # initiate_call() primes ElevenLabs then dials via Twilio
+            call_sid = initiate_call(phone.strip(), briefing, profile)
+
+            # Record the call in shared state so the status list shows it
+            new_call = ScheduledCall(
+                phone_number=phone.strip(),
+                scheduled_at=datetime.now(timezone.utc),
+                status="calling",
+                call_sid=call_sid,
+            )
+            with calls_lock:
+                scheduled_calls[new_call.id] = new_call
+
+            st.success(f"Call placed! CallSid: {call_sid}")
+        except RuntimeError as exc:
+            st.error(f"Call failed: {exc}")
+
+
+def _render_schedule_form(phone: str, briefing, profile) -> None:
+    """
+    Render date + time pickers and a Schedule button inside an st.expander.
+
+    On submit: converts the IST time to UTC, creates a ScheduledCall record,
+    and registers an APScheduler 'date' job to fire initiate_call() at that time.
+
+    Args:
+        phone:    E.164-format phone number from the UI text input (shared with _handle_call_now).
+        briefing: Briefing to deliver — captured in the job closure at schedule time.
+        profile:  UserProfile — also captured in the job closure.
+    """
+    from scheduler import get_scheduler
+
+    # Date and time pickers — shown in IST for the user's convenience
+    sched_date = st.date_input("Call date", key="sched_date")
+    sched_time = st.time_input("Call time (IST)", key="sched_time")
+
+    if st.button("Schedule", key="schedule_btn"):
+        if not phone.strip():
+            st.warning("Enter a phone number before scheduling.")
+            return
+
+        # Convert IST → UTC for APScheduler
+        # ZoneInfo("Asia/Kolkata") is stdlib (Python 3.9+) — no pytz needed
+        ist = ZoneInfo("Asia/Kolkata")
+        naive_local = datetime.combine(sched_date, sched_time)
+        aware_ist   = naive_local.replace(tzinfo=ist)
+        utc_dt      = aware_ist.astimezone(timezone.utc)
+
+        if utc_dt <= datetime.now(timezone.utc):
+            st.warning("Scheduled time must be in the future.")
+            return
+
+        # Create the record BEFORE registering the job so we have an ID
+        new_call = ScheduledCall(
+            phone_number=phone.strip(),
+            scheduled_at=utc_dt,
+            status="scheduled",
+        )
+        with calls_lock:
+            scheduled_calls[new_call.id] = new_call
+
+        # Capture briefing/profile/phone by value in the closure.
+        # APScheduler runs this in a thread pool worker at utc_dt.
+        # Pydantic v2 models are immutable by default — closures are safe.
+        def _job(call_id=new_call.id, ph=phone.strip(), br=briefing, pr=profile):
+            """APScheduler job: update status → placing call → store SID."""
+            from agents.twilio_caller import initiate_call as _initiate
+            # Mark as "calling" before dialling so the UI reflects the attempt
+            with calls_lock:
+                call = scheduled_calls.get(call_id)
+                if call:
+                    call.status = "calling"
+            try:
+                sid = _initiate(ph, br, pr)
+                with calls_lock:
+                    call = scheduled_calls.get(call_id)
+                    if call:
+                        call.call_sid = sid
+            except Exception as exc:
+                # Mark as failed if Twilio raises; Twilio webhook handles completed/failed
+                with calls_lock:
+                    call = scheduled_calls.get(call_id)
+                    if call:
+                        call.status = "failed"
+                print(f"[Scheduler] Job failed for {call_id}: {exc}")
+
+        scheduler = get_scheduler()
+        # 'date' trigger fires the job exactly once at run_date (UTC)
+        scheduler.add_job(_job, "date", run_date=utc_dt, id=new_call.id)
+
+        ist_str = aware_ist.strftime("%d %b %Y at %I:%M %p IST")
+        st.success(f"Call scheduled for {ist_str}.")
+
+
+def _render_scheduled_calls_list() -> None:
+    """
+    Display all ScheduledCall records with colour-coded status badges.
+
+    Reads from shared_state.scheduled_calls (thread-safe snapshot under lock).
+    Sorted by created_at descending (most recent first).
+
+    Status badge colours:
+        scheduled / calling → amber  #c8a96e  (matches editorial accent colour)
+        completed           → green  #4caf50
+        failed              → red    #ef5350
+    """
+    with calls_lock:
+        # Take a snapshot so we don't hold the lock while rendering HTML
+        calls_snapshot = list(scheduled_calls.values())
+
+    if not calls_snapshot:
+        return  # Nothing to show yet — skip the section entirely
+
+    st.markdown('<div class="section-label">Scheduled calls</div>', unsafe_allow_html=True)
+
+    # Sort most-recent first for a natural chronological display
+    for call in sorted(calls_snapshot, key=lambda c: c.created_at, reverse=True):
+        badge_color = {
+            "scheduled": "#c8a96e",
+            "calling":   "#c8a96e",
+            "completed": "#4caf50",
+            "failed":    "#ef5350",
+        }.get(call.status, "#4a4440")
+
+        # Format the UTC datetime for display
+        scheduled_str = call.scheduled_at.strftime("%d %b %Y %H:%M UTC")
+
+        st.markdown(f"""
+        <div style="background:#141414;border:1px solid #2a2a2a;border-radius:6px;
+                    padding:12px 16px;margin:6px 0;display:flex;align-items:center;gap:12px;">
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:0.68rem;
+                         color:{badge_color};text-transform:uppercase;letter-spacing:0.08em;
+                         border:1px solid {badge_color};padding:1px 8px;border-radius:6px;">
+                {call.status}
+            </span>
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:0.8rem;color:#e8e0d0;">
+                {call.phone_number}
+            </span>
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:0.68rem;color:#4a4440;
+                         margin-left:auto;">
+                {scheduled_str}
+            </span>
+        </div>
+        """, unsafe_allow_html=True)
+
+
 def render_briefing_page():
     """Step 3: Briefing audio player, article cards, and conversational Q&A thread."""
     st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
@@ -1074,18 +1251,6 @@ def render_briefing_page():
     </div>
     """, unsafe_allow_html=True)
 
-    # ── Audio player — focal point, generous whitespace ──────────────────────
-    # Design decision: the briefing is primarily an audio experience;
-    # the player gets its own dedicated card with a labelled header so
-    # users immediately know where to interact.
-    st.markdown('<div class="section-label">Audio briefing</div>', unsafe_allow_html=True)
-    st.markdown('<div class="audio-section"><div class="audio-label">Listen to your briefing</div>', unsafe_allow_html=True)
-    if st.session_state.briefing_audio:
-        st.audio(st.session_state.briefing_audio, format="audio/mp3")
-    else:
-        st.markdown('<p style="font-family:\'IBM Plex Mono\',monospace;font-size:0.8rem;color:#4a4440;">Audio unavailable.</p>', unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
     # Transcript in expander — secondary to audio
     with st.expander("Read transcript", expanded=False):
         st.markdown(f'<p style="font-family:\'Source Serif 4\',serif;font-size:0.92rem;color:#b0a898;line-height:1.7;">{briefing.summary_text}</p>', unsafe_allow_html=True)
@@ -1095,54 +1260,54 @@ def render_briefing_page():
     for i, article in enumerate(briefing.top_articles, 1):
         render_article_card(i, article)
 
+    # ── Phone calling section ─────────────────────────────────────────────────
+    # Tony (ElevenLabs) handles the live call — same agent as in-browser Q&A.
+    # "Call Me Now" places an immediate call; "Schedule a call" books a future one.
+    st.markdown('<div class="section-label">Get called by Tony</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<p style="font-family:\'Source Serif 4\',serif;font-style:italic;'
+        'font-size:0.82rem;color:#4a4440;margin-bottom:10px;">'
+        'Tony will call you and deliver this briefing over the phone.</p>',
+        unsafe_allow_html=True,
+    )
+
+    col_phone, col_actions = st.columns([2, 1])
+
+    with col_phone:
+        # Phone input persists across reruns so user doesn't retype after scheduling
+        phone_input = st.text_input(
+            "Phone number",
+            value=st.session_state.get("call_phone_number", ""),
+            placeholder="+919876543210",
+            label_visibility="collapsed",
+            key="phone_input_field",
+        )
+        st.session_state.call_phone_number = phone_input
+
+    with col_actions:
+        if st.button("Call Me Now", type="primary", use_container_width=True, key="call_now_btn"):
+            _handle_call_now(phone_input, briefing, profile)
+
+        with st.expander("Schedule a call", expanded=False):
+            _render_schedule_form(phone_input, briefing, profile)
+
+    # Live status list — reads from shared_state; updates on next Streamlit rerun
+    _render_scheduled_calls_list()
+
     # ── Q&A section ──────────────────────────────────────────────────────────
     st.markdown('<div class="section-label">Ask a follow-up</div>', unsafe_allow_html=True)
     st.markdown('<p style="font-family:\'Source Serif 4\',serif;font-style:italic;font-size:0.82rem;color:#4a4440;margin-bottom:10px;">Ask about any story, request context, or explore a topic further.</p>', unsafe_allow_html=True)
 
     render_chat_thread()
 
-    # Input row: voice + text
-    col_voice, col_text = st.columns([1, 2])
-
-    with col_voice:
-        try:
-            from audio_recorder_streamlit import audio_recorder
-            from agents.voice import speech_to_text
-            # Streamlit limitation: audio_recorder renders its own button with
-            # no CSS class hook; we wrap it in a div for minimal styling.
-            st.markdown('<div style="margin-top:4px;">', unsafe_allow_html=True)
-            recorded = audio_recorder(
-                text="Speak",
-                recording_color="#c8a96e",
-                neutral_color="#4a4440",
-                pause_threshold=2.0,
-            )
-            st.markdown('</div>', unsafe_allow_html=True)
-            if recorded:
-                # Dedup: audio_recorder returns the same bytes on every Streamlit
-                # rerun until new audio is recorded — skip already-processed audio
-                audio_hash = hashlib.md5(recorded).hexdigest()
-                if audio_hash != st.session_state.get("last_audio_hash"):
-                    st.session_state.last_audio_hash = audio_hash
-                    with st.spinner("Transcribing..."):
-                        user_text = speech_to_text(recorded)
-                    if user_text:
-                        # Pass raw audio bytes — Gemini Live uses them directly,
-                        # bypassing Google Free STT quality issues
-                        process_user_question(user_text, audio_bytes=recorded)
-                    else:
-                        st.caption("Could not transcribe. ffmpeg may not be installed.")
-        except ImportError:
-            st.caption("Voice input requires audio-recorder-streamlit.")
-
-    with col_text:
-        st.text_input("Question", key="chat_input",
-                      placeholder="e.g., Why does this matter for Indian markets?",
-                      label_visibility="collapsed")
-        if st.button("Send", key="send_btn", type="primary"):
-            question = st.session_state.get("chat_input", "").strip()
-            if question:
-                process_user_question(question)
+    # ── Q&A text input (voice recording removed — replaced by phone calls) ──────
+    st.text_input("Question", key="chat_input",
+                  placeholder="e.g., Why does this matter for Indian markets?",
+                  label_visibility="collapsed")
+    if st.button("Send", key="send_btn", type="primary"):
+        question = st.session_state.get("chat_input", "").strip()
+        if question:
+            process_user_question(question)
 
     # ── Sidebar ──────────────────────────────────────────────────────────────
     with st.sidebar:
@@ -1153,50 +1318,6 @@ def render_briefing_page():
             st.session_state.chat_history   = []
             st.session_state.briefing_audio = None
             st.rerun()
-
-        # ── Voice provider toggle ─────────────────────────────────────────
-        # Lets the user switch between Gemini Live (audio-in/audio-out) and
-        # ElevenLabs Tony (text-in/audio-out) for the Q&A voice responses.
-        st.markdown('<hr/>', unsafe_allow_html=True)
-        st.markdown(
-            '<p style="font-family:\'IBM Plex Mono\',monospace;font-size:0.7rem;'
-            'text-transform:uppercase;letter-spacing:0.1em;color:#8a8278;margin-bottom:8px;">'
-            'Voice model</p>',
-            unsafe_allow_html=True,
-        )
-        # Map display label → internal key
-        _PROVIDER_OPTIONS = {
-            "Gemini Live":         "gemini_live",
-            "ElevenLabs (Tony)":   "elevenlabs",
-        }
-        _current_label = next(
-            (k for k, v in _PROVIDER_OPTIONS.items()
-             if v == st.session_state.get("voice_provider", "gemini_live")),
-            "Gemini Live",
-        )
-        # st.radio persists the choice across Streamlit reruns via session state
-        selected_label = st.radio(
-            label="voice_model_radio",
-            options=list(_PROVIDER_OPTIONS.keys()),
-            index=list(_PROVIDER_OPTIONS.keys()).index(_current_label),
-            label_visibility="collapsed",
-        )
-        # Persist the chosen provider so process_user_question() reads it
-        st.session_state.voice_provider = _PROVIDER_OPTIONS[selected_label]
-
-        # Small caption explaining what each provider does
-        if st.session_state.voice_provider == "gemini_live":
-            st.markdown(
-                '<p style="font-size:0.68rem;color:#4a4440;font-family:\'IBM Plex Mono\','
-                'monospace;margin-top:4px;">Audio in → Gemini voice out</p>',
-                unsafe_allow_html=True,
-            )
-        else:
-            st.markdown(
-                '<p style="font-size:0.68rem;color:#4a4440;font-family:\'IBM Plex Mono\','
-                'monospace;margin-top:4px;">Text in → Tony (ElevenLabs) voice out</p>',
-                unsafe_allow_html=True,
-            )
 
         st.markdown('<hr/>', unsafe_allow_html=True)
         st.markdown("""
@@ -1212,99 +1333,37 @@ def render_briefing_page():
 # Q&A HANDLER
 # =============================================================================
 
-def process_user_question(question: str, audio_bytes: bytes = None):
+def process_user_question(question: str):
     """
-    Process a user question — routes to the active voice provider.
+    Process a typed follow-up question about the briefing via Gemini.
 
-    Routing logic (checked in order):
-        Path A — Gemini Live:    if audio_bytes present AND voice_provider == "gemini_live"
-                                 Audio-in / audio-out via a single WebSocket session.
-        Path B — ElevenLabs:    if voice_provider == "elevenlabs"
-                                 Text-in / audio-out via ElevenLabs Agent Tony.
-                                 Works for both voice (STT text) and typed questions.
-        Path C — Text fallback: answer_question() + gTTS, used when A/B fail or
-                                 voice_provider == "gemini_live" but no audio_bytes.
+    Voice recording has been removed — all Q&A is text input only.
+    Answers via agents/conversation.py (Gemini) + gTTS for audio playback.
 
     Args:
-        question:    The question text (always required for chat history).
-        audio_bytes: Raw WebM from audio_recorder_streamlit (optional).
-                     Required for Gemini Live; ignored by ElevenLabs.
+        question: The user's typed question string.
     """
     briefing = st.session_state.briefing
     profile  = st.session_state.profile
 
     # Snapshot history BEFORE appending current question.
     # answer_question() adds "User's question: {question}" separately,
-    # so passing the post-append history would make the question appear twice.
+    # so passing the post-append history would double-count the question.
     history_snapshot = list(st.session_state.chat_history)
     st.session_state.chat_history.append({"role": "user", "content": question})
 
-    provider = st.session_state.get("voice_provider", "gemini_live")
-
-    # ── Path A: Gemini Live (audio in → audio out) ─────────────────────────
-    # Only attempted when audio bytes are present (voice input was used) and
-    # Gemini Live is the selected provider.
-    # Eliminates the 3-step STT→LLM→TTS chain with a single WebSocket session.
-    if audio_bytes and provider == "gemini_live":
-        try:
-            from agents.gemini_live import gemini_live_answer
-            with st.spinner("MyET AI is responding..."):
-                mp3_bytes, response_text = gemini_live_answer(
-                    user_audio_webm=audio_bytes,
-                    briefing=briefing,
-                    profile=profile,
-                    chat_history=history_snapshot,
-                )
-            display_text = response_text if response_text else "[Voice response — press play above]"
-            st.session_state.chat_history.append({"role": "assistant", "content": display_text})
-            st.session_state.last_response_audio = mp3_bytes
-            st.rerun()
-            return
-        except RuntimeError as e:
-            # Known failure modes: no ffmpeg, no API key, timeout
-            st.warning(f"Voice Q&A unavailable ({e}). Using text mode.")
-        except Exception as e:
-            print(f"[GeminiLive] Unexpected error: {e}")
-            st.warning("Voice Q&A error. Using text mode.")
-
-    # ── Path B: ElevenLabs Tony (text in → audio out) ──────────────────────
-    # Activated when ElevenLabs is the selected provider.
-    # Works for both voice input (STT text) and typed questions — no raw audio needed.
-    if provider == "elevenlabs":
-        try:
-            from agents.elevenlabs_convo import elevenlabs_convo_answer
-            with st.spinner("Tony is thinking..."):
-                mp3_bytes, response_text = elevenlabs_convo_answer(
-                    question=question,
-                    briefing=briefing,
-                    profile=profile,
-                    chat_history=history_snapshot,
-                )
-            display_text = response_text if response_text else "[Voice response — press play above]"
-            st.session_state.chat_history.append({"role": "assistant", "content": display_text})
-            st.session_state.last_response_audio = mp3_bytes
-            st.rerun()
-            return
-        except RuntimeError as e:
-            st.warning(f"ElevenLabs unavailable ({e}). Using text mode.")
-        except Exception as e:
-            print(f"[ElevenLabs] Unexpected error: {e}")
-            st.warning("ElevenLabs error. Using text mode.")
-
-    # ── Path C: Text fallback (original answer_question + TTS chain) ───────
-    # Used when: (a) Gemini Live is selected but no audio_bytes available,
-    #            (b) Gemini Live or ElevenLabs raised an error above.
     from agents.conversation import answer_question
     from agents.voice import text_to_speech
+
     try:
         response = answer_question(
             question=question,
             briefing=briefing,
             profile=profile,
-            chat_history=history_snapshot,  # snapshot without current question
+            chat_history=history_snapshot,
         )
-    except Exception as e:
-        response = f"Unable to process your question. ({e})"
+    except Exception as exc:
+        response = f"Unable to process your question. ({exc})"
 
     st.session_state.chat_history.append({"role": "assistant", "content": response})
 
@@ -1322,6 +1381,14 @@ def process_user_question(question: str, audio_bytes: bytes = None):
 
 def main():
     init_session_state()
+
+    # ── One-time background service startup ───────────────────────────────────
+    # Both start_server() and get_scheduler() are guarded internally against
+    # double-starting on Streamlit reruns (module-level flags + threading.Lock).
+    from server import start_server
+    from scheduler import get_scheduler
+    start_server()    # FastAPI on :8000 — receives Twilio status callbacks
+    get_scheduler()   # APScheduler — fires scheduled call jobs in background thread
 
     if st.session_state.step == "profile":
         render_profile_page()
