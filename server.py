@@ -18,6 +18,7 @@ Twilio status callback payload (form-encoded POST):
     (other fields Twilio sends — we only use CallSid and CallStatus)
 """
 
+import asyncio
 import threading
 import uvicorn
 from fastapi import FastAPI, Form, Response
@@ -65,19 +66,34 @@ async def twilio_status_callback(
     """
     terminal_status = _TERMINAL_STATUS_MAP.get(CallStatus)
     if terminal_status:
-        # Lock protects the read-scan-write sequence from concurrent updates.
-        # Without the lock, two simultaneous webhook POSTs could both find the
-        # same ScheduledCall and write conflicting statuses.
-        with calls_lock:
-            for call in scheduled_calls.values():
-                if call.call_sid == CallSid:
-                    call.status = terminal_status
-                    print(f"[Webhook] {CallSid} → {terminal_status}")
-                    break  # call_sid is unique — no need to continue scanning
+        # We run the lock acquisition in a thread pool executor so we don't
+        # block the uvicorn asyncio event loop thread while waiting for the lock.
+        # threading.Lock is not awaitable — holding it directly in an async
+        # function would stall the event loop if another thread holds the lock.
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _update_call_status, CallSid, terminal_status)
 
     # 204 is intentional: Twilio ignores the body, and sending empty 200 also works,
     # but 204 is the semantically correct "processed, no content to return" response.
     return Response(status_code=204)
+
+
+def _update_call_status(call_sid: str, terminal_status: str) -> None:
+    """
+    Update ScheduledCall.status under the threading lock.
+
+    Runs in a thread pool executor (called via run_in_executor from the async
+    route) so the event loop is not blocked while acquiring calls_lock.
+    """
+    # Lock protects the read-scan-write sequence from concurrent updates.
+    # Without the lock, two simultaneous webhook POSTs could both find the
+    # same ScheduledCall and write conflicting statuses.
+    with calls_lock:
+        for call in scheduled_calls.values():
+            if call.call_sid == call_sid:
+                call.status = terminal_status
+                print(f"[Webhook] {call_sid} → {terminal_status}")
+                break  # call_sid is unique — no need to continue scanning
 
 
 # ---------------------------------------------------------------------------
@@ -110,15 +126,17 @@ def start_server(host: str = "0.0.0.0", port: int = 8000) -> None:
     with _server_lock:
         if _server_started:
             return  # Already running — skip on Streamlit reruns
+
+        def _run() -> None:
+            # log_level="warning" suppresses uvicorn's per-request access logs,
+            # which would otherwise clutter the Streamlit terminal output.
+            uvicorn.run(app, host=host, port=port, log_level="warning")
+
+        # daemon=True: thread is killed automatically when the Streamlit process exits.
+        # No explicit thread.join() or cleanup needed.
+        thread = threading.Thread(target=_run, daemon=True, name="FastAPI-Webhook")
+        thread.start()
+        # Set flag AFTER thread.start() succeeds — if start() raises, the flag
+        # stays False so the next call to start_server() can retry correctly.
         _server_started = True
-
-    def _run() -> None:
-        # log_level="warning" suppresses uvicorn's per-request access logs,
-        # which would otherwise clutter the Streamlit terminal output.
-        uvicorn.run(app, host=host, port=port, log_level="warning")
-
-    # daemon=True: thread is killed automatically when the Streamlit process exits.
-    # No explicit thread.join() or cleanup needed.
-    thread = threading.Thread(target=_run, daemon=True, name="FastAPI-Webhook")
-    thread.start()
     print(f"[Server] FastAPI webhook listening on {host}:{port}")
