@@ -1,9 +1,8 @@
 """MyET AI + Voice Companion — Streamlit App."""
+import hashlib
+import html as html_lib  # for escaping RSS/LLM content in unsafe_allow_html blocks
 import streamlit as st
 from models.schemas import UserProfile
-from pipeline import run_pipeline
-from agents.voice import text_to_speech, speech_to_text
-from agents.conversation import answer_question
 
 # --- Page Config ---
 st.set_page_config(
@@ -51,12 +50,14 @@ st.markdown("""
 def init_session_state():
     """Initialize session state variables."""
     defaults = {
-        "step": "profile",  # profile -> loading -> briefing -> chat
+        "step": "profile",         # profile -> loading -> briefing
         "profile": None,
         "briefing": None,
         "chat_history": [],
         "briefing_audio": None,
         "last_response_audio": None,
+        "pipeline_running": False, # guard against double pipeline execution on rerun
+        "last_audio_hash": None,   # dedup: skip reprocessing same audio bytes on rerun
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -134,50 +135,39 @@ def render_loading_page():
     st.markdown("<h1 class='main-header'>🎙️ MyET AI</h1>", unsafe_allow_html=True)
 
     profile = st.session_state.profile
-    st.info(f"Preparing your personalized briefing, {profile.name}...")
 
+    # Guard: if a rerun fires while the pipeline is already running
+    # (e.g. browser heartbeat), don't start a second execution
+    if st.session_state.get("pipeline_running"):
+        st.info(f"Preparing your personalized briefing, {profile.name}...")
+        st.spinner("Pipeline is running...")
+        return
+
+    st.session_state.pipeline_running = True
+    st.info(f"Preparing your personalized briefing, {profile.name}...")
     progress = st.progress(0, text="Starting pipeline...")
 
     try:
-        # Run the full pipeline
-        progress.progress(10, text="📡 Fetching news articles...")
-        from agents.ingestion import ingest
-        articles = ingest(interests=profile.interests)
-
-        if not articles:
-            st.error("Could not fetch any articles. Check your API keys or internet connection.")
-            st.session_state.step = "profile"
-            if st.button("← Go Back"):
-                st.rerun()
-            return
-
-        progress.progress(30, text=f"🔍 Analyzing {len(articles)} articles...")
-        from agents.understanding import understand
-        analyzed = understand(articles)
-
-        progress.progress(50, text="🧠 Understanding your profile...")
-        from agents.profiling import interpret_profile
-        profile_data = interpret_profile(profile)
-
-        progress.progress(70, text="🎯 Personalizing for you...")
-        from agents.personalization import personalize
-        ranked = personalize(analyzed, profile, profile_data)
-
-        progress.progress(85, text="📝 Generating your briefing...")
-        from agents.briefing import generate_briefing
-        briefing = generate_briefing(ranked, profile, profile_data)
+        # run_pipeline() handles agents 1-5 in sequence with rate-limit gaps
+        # (pipeline.py enforces _CALL_GAP = 6s between LLM calls)
+        progress.progress(10, text="📡 Fetching + analyzing + personalizing...")
+        from pipeline import run_pipeline
+        briefing = run_pipeline(profile)
 
         progress.progress(95, text="🎙️ Preparing voice...")
+        from agents.voice import text_to_speech
         audio_bytes = text_to_speech(briefing.summary_text)
 
         st.session_state.briefing = briefing
         st.session_state.briefing_audio = audio_bytes
         progress.progress(100, text="✅ Done!")
 
+        st.session_state.pipeline_running = False
         st.session_state.step = "briefing"
         st.rerun()
 
     except Exception as e:
+        st.session_state.pipeline_running = False
         st.error(f"Pipeline error: {e}")
         if st.button("← Go Back"):
             st.session_state.step = "profile"
@@ -219,14 +209,23 @@ def render_briefing_page():
             badge_class = "low-relevance"
             badge_text = f"Relevance: {score:.0%}"
 
+        # Escape all dynamic values before injecting into HTML —
+        # RSS titles/descriptions can contain <script> tags or HTML entities
+        title_safe = html_lib.escape(article.title)
+        source_safe = html_lib.escape(article.source)
+        desc_safe = html_lib.escape(article.description[:200])
+        why_safe = html_lib.escape(article.why_it_matters)
+        topics_safe = html_lib.escape(", ".join(article.topics))
+        sentiment_safe = html_lib.escape(article.sentiment)
+
         st.markdown(f"""
         <div class='article-card'>
-            <h4>{i}. {article.title}</h4>
+            <h4>{i}. {title_safe}</h4>
             <span class='relevance-badge {badge_class}'>{badge_text}</span>
-            &nbsp;&nbsp;<span style='color:#b2bec3;'>{article.source}</span>
-            <p style='margin-top:0.5rem;'>{article.description[:200]}</p>
-            <p style='color:#6c5ce7; font-style:italic;'>💡 {article.why_it_matters}</p>
-            <small>Topics: {', '.join(article.topics)} | Sentiment: {article.sentiment}</small>
+            &nbsp;&nbsp;<span style='color:#b2bec3;'>{source_safe}</span>
+            <p style='margin-top:0.5rem;'>{desc_safe}</p>
+            <p style='color:#6c5ce7; font-style:italic;'>💡 {why_safe}</p>
+            <small>Topics: {topics_safe} | Sentiment: {sentiment_safe}</small>
         </div>
         """, unsafe_allow_html=True)
 
@@ -235,12 +234,13 @@ def render_briefing_page():
     st.subheader("💬 Ask Me Anything")
     st.caption("Ask follow-up questions about any article, or request a deeper explanation.")
 
-    # Chat history display
+    # Chat history display — escape content to prevent XSS
     for msg in st.session_state.chat_history:
+        content_safe = html_lib.escape(msg["content"])
         if msg["role"] == "user":
-            st.markdown(f"<div class='chat-msg user-msg'>🗣️ <b>You:</b> {msg['content']}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='chat-msg user-msg'>🗣️ <b>You:</b> {content_safe}</div>", unsafe_allow_html=True)
         else:
-            st.markdown(f"<div class='chat-msg ai-msg'>🤖 <b>MyET AI:</b> {msg['content']}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='chat-msg ai-msg'>🤖 <b>MyET AI:</b> {content_safe}</div>", unsafe_allow_html=True)
 
     # Voice input section
     col_voice, col_text = st.columns([1, 2])
@@ -248,20 +248,28 @@ def render_briefing_page():
     with col_voice:
         try:
             from audio_recorder_streamlit import audio_recorder
-            audio_bytes = audio_recorder(
+            from agents.voice import speech_to_text
+            recorded = audio_recorder(
                 text="🎤 Tap to speak",
                 recording_color="#6c5ce7",
                 neutral_color="#b2bec3",
                 pause_threshold=2.0,
             )
-            if audio_bytes:
-                with st.spinner("Transcribing..."):
-                    user_text = speech_to_text(audio_bytes)
-                if user_text:
-                    st.success(f"Heard: {user_text}")
-                    process_user_question(user_text)
-                else:
-                    st.warning("⚠️ Couldn't transcribe audio. ffmpeg may not be installed. Type your question below instead.")
+            if recorded:
+                # Dedup: audio_recorder returns the same bytes on every Streamlit
+                # rerun until new audio is recorded — skip if we already processed this
+                audio_hash = hashlib.md5(recorded).hexdigest()
+                if audio_hash != st.session_state.get("last_audio_hash"):
+                    st.session_state.last_audio_hash = audio_hash
+                    with st.spinner("Transcribing..."):
+                        user_text = speech_to_text(recorded)
+                    if user_text:
+                        st.success(f"Heard: {user_text}")
+                        # Pass raw audio too — Gemini Live uses it directly,
+                        # bypassing Google Free STT quality issues
+                        process_user_question(user_text, audio_bytes=recorded)
+                    else:
+                        st.warning("⚠️ Couldn't transcribe audio. Type your question below instead.")
         except ImportError:
             st.info("Voice input requires audio-recorder-streamlit package.")
 
@@ -298,30 +306,64 @@ def render_briefing_page():
         """)
 
 
-def process_user_question(question: str):
-    """Process a user question and generate response."""
+def process_user_question(question: str, audio_bytes: bytes = None):
+    """
+    Process a user question — Gemini Live path (audio) with text fallback.
+
+    audio_bytes: raw WebM from audio_recorder_streamlit (optional).
+                 If provided, tries Gemini Live for voice-in/voice-out.
+    question:    text of the question (always required for chat history display).
+    """
     briefing = st.session_state.briefing
     profile = st.session_state.profile
 
-    # Add user message
+    # Snapshot history BEFORE appending current question.
+    # answer_question() adds "User's question: {question}" separately,
+    # so passing the post-append history would make the question appear twice.
+    history_snapshot = list(st.session_state.chat_history)
     st.session_state.chat_history.append({"role": "user", "content": question})
 
+    # ── Path A: Gemini Live (audio in → audio out) ─────────────────────────
+    # Only attempted when audio bytes are present (voice input was used).
+    # Eliminates the 3-step STT→LLM→TTS chain with a single WebSocket session.
+    if audio_bytes:
+        try:
+            from agents.gemini_live import gemini_live_answer
+            with st.spinner("MyET AI is responding..."):
+                mp3_bytes, response_text = gemini_live_answer(
+                    user_audio_webm=audio_bytes,
+                    briefing=briefing,
+                    profile=profile,
+                    chat_history=history_snapshot,
+                )
+            display_text = response_text if response_text else "[Voice response — press play above]"
+            st.session_state.chat_history.append({"role": "assistant", "content": display_text})
+            st.session_state.last_response_audio = mp3_bytes
+            st.rerun()
+            return
+        except RuntimeError as e:
+            # Known failure modes: no ffmpeg, no API key, timeout
+            st.warning(f"Voice Q&A unavailable ({e}). Using text mode.")
+        except Exception as e:
+            print(f"[GeminiLive] Unexpected error: {e}")
+            st.warning("Voice Q&A error. Using text mode.")
+
+    # ── Path B: Text fallback (original answer_question + TTS chain) ───────
+    from agents.conversation import answer_question
+    from agents.voice import text_to_speech
     try:
-        # Get AI response
         response = answer_question(
             question=question,
             briefing=briefing,
             profile=profile,
-            chat_history=st.session_state.chat_history,
+            chat_history=history_snapshot,  # snapshot without current question
         )
     except Exception as e:
         response = f"Sorry, I couldn't process that right now. ({e})"
         print(f"[Q&A] Error: {e}")
 
-    # Add AI response
     st.session_state.chat_history.append({"role": "assistant", "content": response})
 
-    # Generate voice response
     try:
         audio = text_to_speech(response)
         st.session_state.last_response_audio = audio
