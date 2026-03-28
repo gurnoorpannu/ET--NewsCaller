@@ -1,6 +1,6 @@
 """Data models for the pipeline."""
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from pydantic import BaseModel, Field
 
@@ -70,4 +70,4 @@ class ScheduledCall(BaseModel):
     # Twilio CallSid — set after Twilio confirms the call was placed
     call_sid: Optional[str] = None
     # UTC datetime this record was created (for display sorting)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
