@@ -604,6 +604,9 @@ def init_session_state():
         "pipeline_running": False,
         # Audio dedup: skip reprocessing same recording on every rerun
         "last_audio_hash": None,
+        # Voice provider toggle: "gemini_live" or "elevenlabs"
+        # Controls which AI handles Q&A voice responses
+        "voice_provider": "gemini_live",
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -1143,6 +1146,50 @@ def render_briefing_page():
             st.session_state.briefing_audio = None
             st.rerun()
 
+        # ── Voice provider toggle ─────────────────────────────────────────
+        # Lets the user switch between Gemini Live (audio-in/audio-out) and
+        # ElevenLabs Tony (text-in/audio-out) for the Q&A voice responses.
+        st.markdown('<hr/>', unsafe_allow_html=True)
+        st.markdown(
+            '<p style="font-family:\'IBM Plex Mono\',monospace;font-size:0.7rem;'
+            'text-transform:uppercase;letter-spacing:0.1em;color:#8a8278;margin-bottom:8px;">'
+            'Voice model</p>',
+            unsafe_allow_html=True,
+        )
+        # Map display label → internal key
+        _PROVIDER_OPTIONS = {
+            "Gemini Live":         "gemini_live",
+            "ElevenLabs (Tony)":   "elevenlabs",
+        }
+        _current_label = next(
+            (k for k, v in _PROVIDER_OPTIONS.items()
+             if v == st.session_state.get("voice_provider", "gemini_live")),
+            "Gemini Live",
+        )
+        # st.radio persists the choice across Streamlit reruns via session state
+        selected_label = st.radio(
+            label="voice_model_radio",
+            options=list(_PROVIDER_OPTIONS.keys()),
+            index=list(_PROVIDER_OPTIONS.keys()).index(_current_label),
+            label_visibility="collapsed",
+        )
+        # Persist the chosen provider so process_user_question() reads it
+        st.session_state.voice_provider = _PROVIDER_OPTIONS[selected_label]
+
+        # Small caption explaining what each provider does
+        if st.session_state.voice_provider == "gemini_live":
+            st.markdown(
+                '<p style="font-size:0.68rem;color:#4a4440;font-family:\'IBM Plex Mono\','
+                'monospace;margin-top:4px;">Audio in → Gemini voice out</p>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                '<p style="font-size:0.68rem;color:#4a4440;font-family:\'IBM Plex Mono\','
+                'monospace;margin-top:4px;">Text in → Tony (ElevenLabs) voice out</p>',
+                unsafe_allow_html=True,
+            )
+
         st.markdown('<hr/>', unsafe_allow_html=True)
         st.markdown("""
         <p style="font-family:'IBM Plex Mono',monospace;font-size:0.65rem;color:#4a4440;line-height:1.8;">
@@ -1159,11 +1206,21 @@ def render_briefing_page():
 
 def process_user_question(question: str, audio_bytes: bytes = None):
     """
-    Process a user question — Gemini Live path (audio) with text fallback.
+    Process a user question — routes to the active voice provider.
 
-    audio_bytes: raw WebM from audio_recorder_streamlit (optional).
-                 If provided, tries Gemini Live for voice-in/voice-out.
-    question:    text of the question (always required for chat history display).
+    Routing logic (checked in order):
+        Path A — Gemini Live:    if audio_bytes present AND voice_provider == "gemini_live"
+                                 Audio-in / audio-out via a single WebSocket session.
+        Path B — ElevenLabs:    if voice_provider == "elevenlabs"
+                                 Text-in / audio-out via ElevenLabs Agent Tony.
+                                 Works for both voice (STT text) and typed questions.
+        Path C — Text fallback: answer_question() + gTTS, used when A/B fail or
+                                 voice_provider == "gemini_live" but no audio_bytes.
+
+    Args:
+        question:    The question text (always required for chat history).
+        audio_bytes: Raw WebM from audio_recorder_streamlit (optional).
+                     Required for Gemini Live; ignored by ElevenLabs.
     """
     briefing = st.session_state.briefing
     profile  = st.session_state.profile
@@ -1174,10 +1231,13 @@ def process_user_question(question: str, audio_bytes: bytes = None):
     history_snapshot = list(st.session_state.chat_history)
     st.session_state.chat_history.append({"role": "user", "content": question})
 
+    provider = st.session_state.get("voice_provider", "gemini_live")
+
     # ── Path A: Gemini Live (audio in → audio out) ─────────────────────────
-    # Only attempted when audio bytes are present (voice input was used).
+    # Only attempted when audio bytes are present (voice input was used) and
+    # Gemini Live is the selected provider.
     # Eliminates the 3-step STT→LLM→TTS chain with a single WebSocket session.
-    if audio_bytes:
+    if audio_bytes and provider == "gemini_live":
         try:
             from agents.gemini_live import gemini_live_answer
             with st.spinner("MyET AI is responding..."):
@@ -1199,7 +1259,33 @@ def process_user_question(question: str, audio_bytes: bytes = None):
             print(f"[GeminiLive] Unexpected error: {e}")
             st.warning("Voice Q&A error. Using text mode.")
 
-    # ── Path B: Text fallback (original answer_question + TTS chain) ───────
+    # ── Path B: ElevenLabs Tony (text in → audio out) ──────────────────────
+    # Activated when ElevenLabs is the selected provider.
+    # Works for both voice input (STT text) and typed questions — no raw audio needed.
+    if provider == "elevenlabs":
+        try:
+            from agents.elevenlabs_convo import elevenlabs_convo_answer
+            with st.spinner("Tony is thinking..."):
+                mp3_bytes, response_text = elevenlabs_convo_answer(
+                    question=question,
+                    briefing=briefing,
+                    profile=profile,
+                    chat_history=history_snapshot,
+                )
+            display_text = response_text if response_text else "[Voice response — press play above]"
+            st.session_state.chat_history.append({"role": "assistant", "content": display_text})
+            st.session_state.last_response_audio = mp3_bytes
+            st.rerun()
+            return
+        except RuntimeError as e:
+            st.warning(f"ElevenLabs unavailable ({e}). Using text mode.")
+        except Exception as e:
+            print(f"[ElevenLabs] Unexpected error: {e}")
+            st.warning("ElevenLabs error. Using text mode.")
+
+    # ── Path C: Text fallback (original answer_question + TTS chain) ───────
+    # Used when: (a) Gemini Live is selected but no audio_bytes available,
+    #            (b) Gemini Live or ElevenLabs raised an error above.
     from agents.conversation import answer_question
     from agents.voice import text_to_speech
     try:
