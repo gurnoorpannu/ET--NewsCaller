@@ -427,35 +427,6 @@ hr {
 .badge-med  { background: rgba(200,169,110,0.15); color: #c8a96e; border: 1px solid rgba(200,169,110,0.3); }
 .badge-low  { background: rgba(239,83,80,0.1);   color: #ef5350; border: 1px solid rgba(239,83,80,0.2); }
 
-/* =========================================================
-   BRIEFING PAGE — Audio Player Section
-   ========================================================= */
-.audio-section {
-    background: #141414;
-    border: 1px solid #2a2a2a;
-    border-radius: 6px;
-    padding: 24px 28px;
-    margin: 16px 0 24px 0;
-}
-.audio-label {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 0.65rem;
-    text-transform: uppercase;
-    letter-spacing: 0.12em;
-    color: #8a8278;
-    margin-bottom: 14px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-.audio-label::before {
-    content: '';
-    display: inline-block;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: #c8a96e;
-}
 
 /* =========================================================
    BRIEFING PAGE — Chat Thread
@@ -596,7 +567,6 @@ def init_session_state():
         "profile": None,
         "briefing": None,
         "chat_history": [],
-        "briefing_audio": None,
         "last_response_audio": None,
         # Role/interest selectors (profile page state)
         "selected_role": ROLES[0][0],
@@ -945,12 +915,8 @@ def render_loading_page():
         details[4]  = "ready"
         update_log()
 
-        # ── TTS (not a named pipeline stage) ───────────────────────────────
-        from agents.voice import text_to_speech
-        audio_bytes = text_to_speech(briefing.summary_text)
-
-        st.session_state.briefing       = briefing
-        st.session_state.briefing_audio = audio_bytes
+        # TTS auto-play removed — briefing is now delivered via Twilio phone call.
+        st.session_state.briefing         = briefing
         st.session_state.pipeline_running = False
         st.session_state.step           = "briefing"
         st.rerun()
@@ -1151,9 +1117,8 @@ def _render_schedule_form(phone: str, briefing, profile) -> None:
         with calls_lock:
             scheduled_calls[new_call.id] = new_call
 
-        # Capture briefing/profile/phone by value in the closure.
-        # APScheduler runs this in a thread pool worker at utc_dt.
-        # Pydantic v2 models are immutable by default — closures are safe.
+        # Values are bound at definition time via default arguments — not captured
+        # by reference. APScheduler runs this in a thread pool worker at utc_dt.
         def _job(call_id=new_call.id, ph=phone.strip(), br=briefing, pr=profile):
             """APScheduler job: update status → placing call → store SID."""
             from agents.twilio_caller import initiate_call as _initiate
@@ -1316,7 +1281,6 @@ def render_briefing_page():
             st.session_state.step           = "profile"
             st.session_state.briefing       = None
             st.session_state.chat_history   = []
-            st.session_state.briefing_audio = None
             st.rerun()
 
         st.markdown('<hr/>', unsafe_allow_html=True)

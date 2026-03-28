@@ -70,7 +70,9 @@ async def twilio_status_callback(
         # block the uvicorn asyncio event loop thread while waiting for the lock.
         # threading.Lock is not awaitable — holding it directly in an async
         # function would stall the event loop if another thread holds the lock.
-        loop = asyncio.get_event_loop()
+        # get_running_loop() is correct inside an async function (get_event_loop()
+        # is deprecated in Python 3.10+ and raises in 3.12+ when inside a loop).
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, _update_call_status, CallSid, terminal_status)
 
     # 204 is intentional: Twilio ignores the body, and sending empty 200 also works,
