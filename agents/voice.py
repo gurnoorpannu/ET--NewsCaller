@@ -1,6 +1,7 @@
 """Voice Agent — Text-to-Speech (ElevenLabs/gTTS) and Speech-to-Text (Google)."""
 import io
 import os
+import subprocess
 import wave
 import struct
 import tempfile
@@ -35,9 +36,26 @@ def text_to_speech(text: str, lang: str = "en") -> bytes:
 
 
 def _webm_to_wav_ffmpeg(webm_path: str, wav_path: str) -> bool:
-    """Try converting WebM to WAV using ffmpeg. Returns True if successful."""
-    ret = os.system(f'ffmpeg -y -i "{webm_path}" -ar 16000 -ac 1 "{wav_path}" -loglevel quiet 2>/dev/null')
-    return ret == 0 and os.path.exists(wav_path)
+    """
+    Convert WebM to WAV using ffmpeg via subprocess (no shell — no injection risk).
+    Returns True if conversion succeeded and output file exists.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-i", webm_path,
+                "-ar", "16000",   # 16 kHz sample rate for speech recognition
+                "-ac", "1",       # mono channel
+                wav_path,
+            ],
+            capture_output=True,  # suppress stdout/stderr noise
+            timeout=30,           # don't hang forever
+        )
+        return result.returncode == 0 and os.path.exists(wav_path)
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        # FileNotFoundError = ffmpeg not installed
+        return False
 
 
 def _wav_from_raw_pcm(audio_bytes: bytes) -> bytes:
