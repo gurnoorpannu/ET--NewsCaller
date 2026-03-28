@@ -183,7 +183,7 @@ def initiate_call(phone_number: str, briefing: Briefing, profile: UserProfile) -
             status_callback_method="POST",
             # Only subscribe to terminal events to reduce webhook noise.
             # Twilio will POST to status_callback_url when one of these fires.
-            status_callback_event=["completed", "failed", "busy", "no-answer"],
+            status_callback_event=["completed", "failed", "busy", "no-answer", "canceled"],
         )
     except Exception as exc:
         raise RuntimeError(f"Twilio API error: {exc}") from exc
