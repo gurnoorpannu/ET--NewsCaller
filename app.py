@@ -2,53 +2,594 @@
 import hashlib
 import html as html_lib  # for escaping RSS/LLM content in unsafe_allow_html blocks
 import streamlit as st
+from datetime import datetime
 from models.schemas import UserProfile
 
 # --- Page Config ---
 st.set_page_config(
     page_title="MyET AI — Voice News Companion",
-    page_icon="🎙️",
+    page_icon="▶",
     layout="wide",
 )
 
-# --- Custom CSS ---
-st.markdown("""
+# =============================================================================
+# GLOBAL CSS
+# Design system:
+#   Base:    #0f0f0f (near-black canvas)
+#   Surface: #181818 (card/input surfaces)
+#   Border:  #2a2a2a (subtle dividers)
+#   Text:    #e8e0d0 (warm off-white — WCAG AA on #0f0f0f: 13.2:1)
+#   Muted:   #8a8278 (secondary text — 4.7:1 on #0f0f0f ✓ AA)
+#   Accent:  #c8a96e (amber — 5.9:1 on #0f0f0f ✓ AA)
+#   Radius:  6px (one value everywhere)
+#   Fonts:   'IBM Plex Mono' for headings/labels, 'Source Serif 4' for body
+#
+# Sentiment border palette:
+#   Positive: #4caf50  (green)
+#   Neutral:  #9e9e9e  (mid-grey)
+#   Negative: #ef5350  (red)
+# =============================================================================
+
+GLOBAL_CSS = """
 <style>
-    .main-header {
-        text-align: center;
-        padding: 1rem 0;
-    }
-    .article-card {
-        background: #1e1e2e;
-        border-radius: 12px;
-        padding: 1.2rem;
-        margin: 0.8rem 0;
-        border-left: 4px solid #6c5ce7;
-    }
-    .article-card h4 { margin: 0 0 0.5rem 0; }
-    .relevance-badge {
-        display: inline-block;
-        padding: 2px 10px;
-        border-radius: 12px;
-        font-size: 0.8rem;
-        font-weight: bold;
-    }
-    .high-relevance { background: #00b894; color: white; }
-    .med-relevance { background: #fdcb6e; color: black; }
-    .low-relevance { background: #e17055; color: white; }
-    .chat-msg {
-        padding: 0.8rem;
-        border-radius: 10px;
-        margin: 0.5rem 0;
-    }
-    .user-msg { background: #2d3436; }
-    .ai-msg { background: #1e1e2e; border-left: 3px solid #6c5ce7; }
+/* ── Fonts ── */
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,300;0,8..60,400;0,8..60,600;1,8..60,300&display=swap');
+
+/* ── Reset & Base ── */
+html, body, [data-testid="stAppViewContainer"] {
+    background-color: #0f0f0f !important;
+    color: #e8e0d0 !important;
+    font-family: 'Source Serif 4', Georgia, serif !important;
+}
+
+/* Hide Streamlit chrome */
+#MainMenu, footer, header { visibility: hidden; }
+[data-testid="stToolbar"] { display: none; }
+
+/* ── Typography scale ── */
+h1, h2, h3, h4, h5, h6 {
+    font-family: 'IBM Plex Mono', 'Courier New', monospace !important;
+    color: #e8e0d0 !important;
+    letter-spacing: -0.02em;
+}
+
+/* ── Streamlit widget label overrides ── */
+[data-testid="stWidgetLabel"] label,
+[data-testid="stWidgetLabel"] p,
+label, .stSelectbox label,
+[data-baseweb="form-control-label"] {
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-size: 0.72rem !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.1em !important;
+    color: #8a8278 !important;
+}
+
+/* ── Inputs / Textareas ── */
+input[type="text"], textarea,
+[data-baseweb="input"] input,
+[data-baseweb="textarea"] textarea {
+    background: #181818 !important;
+    border: 1px solid #2a2a2a !important;
+    border-radius: 6px !important;
+    color: #e8e0d0 !important;
+    font-family: 'Source Serif 4', serif !important;
+    font-size: 0.95rem !important;
+    transition: border-color 0.15s ease;
+}
+input[type="text"]:focus, textarea:focus,
+[data-baseweb="input"] input:focus {
+    border-color: #c8a96e !important;
+    box-shadow: 0 0 0 2px rgba(200,169,110,0.12) !important;
+    outline: none !important;
+}
+input::placeholder { color: #4a4440 !important; }
+
+/* ── Selectbox ── */
+[data-baseweb="select"] > div {
+    background: #181818 !important;
+    border: 1px solid #2a2a2a !important;
+    border-radius: 6px !important;
+    color: #e8e0d0 !important;
+}
+[data-baseweb="select"] > div:hover {
+    border-color: #c8a96e !important;
+}
+
+/* ── Multiselect ── */
+[data-baseweb="tag"] {
+    background: #2a2a2a !important;
+    border-radius: 6px !important;
+}
+[data-testid="stMultiSelect"] [data-baseweb="input"] {
+    background: #181818 !important;
+}
+
+/* ── Slider ── */
+[data-testid="stSlider"] [data-baseweb="slider"] [role="slider"] {
+    background-color: #c8a96e !important;
+    border-color: #c8a96e !important;
+}
+[data-testid="stSlider"] [data-baseweb="slider"] [data-testid="stThumbValue"] {
+    color: #c8a96e !important;
+}
+
+/* ── Primary Button ── */
+[data-testid="stButton"] > button[kind="primary"],
+button[kind="primary"] {
+    background: #c8a96e !important;
+    color: #0f0f0f !important;
+    border: none !important;
+    border-radius: 6px !important;
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-size: 0.8rem !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.08em !important;
+    text-transform: uppercase !important;
+    padding: 0.6rem 1.6rem !important;
+    transition: background 0.15s, box-shadow 0.15s;
+}
+[data-testid="stButton"] > button[kind="primary"]:hover {
+    background: #dbbf82 !important;
+    box-shadow: 0 2px 12px rgba(200,169,110,0.3) !important;
+}
+
+/* ── Secondary Button ── */
+[data-testid="stButton"] > button:not([kind="primary"]) {
+    background: transparent !important;
+    border: 1px solid #2a2a2a !important;
+    border-radius: 6px !important;
+    color: #8a8278 !important;
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-size: 0.75rem !important;
+    transition: border-color 0.15s, color 0.15s;
+}
+[data-testid="stButton"] > button:not([kind="primary"]):hover {
+    border-color: #c8a96e !important;
+    color: #c8a96e !important;
+}
+
+/* ── st.info / st.warning / st.error / st.success ── */
+[data-testid="stAlert"] {
+    border-radius: 6px !important;
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-size: 0.8rem !important;
+}
+
+/* ── Expander ── */
+[data-testid="stExpander"] details {
+    background: #181818 !important;
+    border: 1px solid #2a2a2a !important;
+    border-radius: 6px !important;
+}
+[data-testid="stExpander"] summary {
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-size: 0.8rem !important;
+    color: #8a8278 !important;
+}
+[data-testid="stExpander"] summary:hover {
+    color: #e8e0d0 !important;
+}
+
+/* ── Audio player ── */
+audio {
+    width: 100% !important;
+    border-radius: 6px !important;
+    filter: invert(1) hue-rotate(180deg) brightness(0.85);
+}
+
+/* ── Divider ── */
+hr {
+    border: none !important;
+    border-top: 1px solid #2a2a2a !important;
+    margin: 1.5rem 0 !important;
+}
+
+/* ── Sidebar ── */
+[data-testid="stSidebar"] {
+    background: #111111 !important;
+    border-right: 1px solid #1e1e1e !important;
+}
+[data-testid="stSidebar"] * {
+    font-family: 'IBM Plex Mono', monospace !important;
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: #0f0f0f; }
+::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: #3a3a3a; }
+
+/* =========================================================
+   PROFILE PAGE — Role Selector Cards
+   Hidden radio input, styled label acts as the card.
+   JS toggles the .selected class on click.
+   ========================================================= */
+.role-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+    margin: 8px 0 16px 0;
+}
+.role-card {
+    background: #181818;
+    border: 1px solid #2a2a2a;
+    border-radius: 6px;
+    padding: 10px 14px;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+    user-select: none;
+}
+.role-card:hover {
+    border-color: #c8a96e;
+    background: #1e1c18;
+    box-shadow: 0 0 0 1px rgba(200,169,110,0.15);
+}
+.role-card.selected {
+    border-color: #c8a96e;
+    background: #1e1c18;
+    box-shadow: 0 0 0 2px rgba(200,169,110,0.2);
+}
+.role-card .role-title {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: #e8e0d0;
+    letter-spacing: 0.02em;
+    display: block;
+    margin-bottom: 2px;
+}
+.role-card.selected .role-title { color: #c8a96e; }
+.role-card .role-desc {
+    font-family: 'Source Serif 4', serif;
+    font-size: 0.72rem;
+    color: #8a8278;
+    font-style: italic;
+}
+
+/* PROFILE PAGE — Interest suggestion pills */
+.pill-section-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: #8a8278;
+    margin: 6px 0 6px 0;
+    display: block;
+}
+
+/* Pill buttons rendered via st.button — override to look like pills */
+.pill-row [data-testid="stButton"] > button {
+    background: #181818 !important;
+    border: 1px solid #2a2a2a !important;
+    border-radius: 20px !important;
+    padding: 2px 12px !important;
+    font-size: 0.72rem !important;
+    font-family: 'IBM Plex Mono', monospace !important;
+    color: #8a8278 !important;
+    text-transform: none !important;
+    letter-spacing: 0 !important;
+    height: auto !important;
+    line-height: 1.6 !important;
+    min-height: unset !important;
+    transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.pill-row [data-testid="stButton"] > button:hover {
+    border-color: #c8a96e !important;
+    color: #c8a96e !important;
+    background: #1e1c18 !important;
+}
+.pill-row-active [data-testid="stButton"] > button {
+    background: #1e1c18 !important;
+    border-color: #c8a96e !important;
+    color: #c8a96e !important;
+}
+
+/* =========================================================
+   LOADING PAGE — Pipeline stage log
+   ========================================================= */
+.pipeline-log {
+    background: #111;
+    border: 1px solid #1e1e1e;
+    border-radius: 6px;
+    padding: 20px 24px;
+    font-family: 'IBM Plex Mono', monospace;
+    max-width: 640px;
+    margin: 24px auto;
+}
+.pipeline-log-header {
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: #4a4440;
+    border-bottom: 1px solid #1e1e1e;
+    padding-bottom: 10px;
+    margin-bottom: 14px;
+    display: flex;
+    justify-content: space-between;
+}
+.stage-row {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    padding: 6px 0;
+    border-bottom: 1px solid #181818;
+    font-size: 0.82rem;
+}
+.stage-row:last-child { border-bottom: none; }
+.stage-status {
+    width: 12px;
+    flex-shrink: 0;
+    text-align: center;
+    color: #4a4440;
+}
+.stage-status.pending  { color: #4a4440; }
+.stage-status.running  { color: #c8a96e; }
+.stage-status.done     { color: #4caf50; }
+.stage-status.error    { color: #ef5350; }
+.stage-name {
+    flex: 1;
+    color: #8a8278;
+}
+.stage-name.running { color: #e8e0d0; font-weight: 500; }
+.stage-name.done    { color: #8a8278; }
+.stage-detail {
+    font-size: 0.72rem;
+    color: #4a4440;
+    text-align: right;
+    min-width: 120px;
+}
+.stage-detail.running { color: #c8a96e; }
+.stage-detail.done    { color: #4a4440; }
+
+/* =========================================================
+   BRIEFING PAGE — Article Cards
+   ========================================================= */
+.article-card {
+    background: #141414;
+    border-radius: 6px;
+    border: 1px solid #2a2a2a;
+    border-left: 3px solid #2a2a2a;   /* overridden per-sentiment below */
+    padding: 18px 20px;
+    margin: 12px 0;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+.article-card:hover {
+    box-shadow: 0 2px 16px rgba(0,0,0,0.4);
+    border-color: #3a3a3a;
+}
+/* Sentiment left-border — the ONLY sentiment indicator (no emoji) */
+.article-card.sentiment-positive { border-left-color: #4caf50; }
+.article-card.sentiment-neutral  { border-left-color: #9e9e9e; }
+.article-card.sentiment-negative { border-left-color: #ef5350; }
+
+.article-title {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 1rem;
+    font-weight: 600;
+    color: #e8e0d0;
+    margin: 0 0 8px 0;
+    line-height: 1.4;
+}
+.article-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 10px;
+}
+.article-source {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #c8a96e;
+}
+.article-date {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.68rem;
+    color: #4a4440;
+}
+.article-topics {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.68rem;
+    color: #4a4440;
+}
+.article-body {
+    font-family: 'Source Serif 4', serif;
+    font-size: 0.9rem;
+    color: #b0a898;
+    line-height: 1.6;
+    margin: 0 0 10px 0;
+}
+.article-insight {
+    font-family: 'Source Serif 4', serif;
+    font-style: italic;
+    font-size: 0.85rem;
+    color: #8a8278;
+    border-top: 1px solid #1e1e1e;
+    padding-top: 10px;
+    margin-top: 6px;
+    line-height: 1.5;
+}
+.relevance-badge {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 6px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.65rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+.badge-high { background: rgba(76,175,80,0.15);  color: #4caf50; border: 1px solid rgba(76,175,80,0.3); }
+.badge-med  { background: rgba(200,169,110,0.15); color: #c8a96e; border: 1px solid rgba(200,169,110,0.3); }
+.badge-low  { background: rgba(239,83,80,0.1);   color: #ef5350; border: 1px solid rgba(239,83,80,0.2); }
+
+/* =========================================================
+   BRIEFING PAGE — Audio Player Section
+   ========================================================= */
+.audio-section {
+    background: #141414;
+    border: 1px solid #2a2a2a;
+    border-radius: 6px;
+    padding: 24px 28px;
+    margin: 16px 0 24px 0;
+}
+.audio-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: #8a8278;
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.audio-label::before {
+    content: '';
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #c8a96e;
+}
+
+/* =========================================================
+   BRIEFING PAGE — Chat Thread
+   ========================================================= */
+.chat-thread {
+    background: #111;
+    border: 1px solid #1e1e1e;
+    border-radius: 6px;
+    padding: 16px;
+    max-height: 480px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 14px;
+}
+.chat-bubble {
+    max-width: 80%;
+    padding: 10px 14px;
+    border-radius: 6px;
+    font-family: 'Source Serif 4', serif;
+    font-size: 0.88rem;
+    line-height: 1.55;
+}
+/* User bubbles — right-aligned */
+.chat-bubble-user {
+    align-self: flex-end;
+    background: #1e1c18;
+    border: 1px solid #c8a96e;
+    color: #e8e0d0;
+    border-bottom-right-radius: 2px;
+}
+.chat-bubble-user .bubble-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #c8a96e;
+    margin-bottom: 4px;
+}
+/* AI bubbles — left-aligned */
+.chat-bubble-ai {
+    align-self: flex-start;
+    background: #181818;
+    border: 1px solid #2a2a2a;
+    color: #b0a898;
+    border-bottom-left-radius: 2px;
+}
+.chat-bubble-ai .bubble-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #8a8278;
+    margin-bottom: 4px;
+}
+.chat-empty {
+    text-align: center;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.75rem;
+    color: #2a2a2a;
+    padding: 32px 0;
+    letter-spacing: 0.06em;
+}
+
+/* =========================================================
+   UTILITY
+   ========================================================= */
+.section-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: #4a4440;
+    margin: 24px 0 12px 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.section-label::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: #1e1e1e;
+}
+
+.page-title {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 1.6rem;
+    font-weight: 600;
+    color: #e8e0d0;
+    letter-spacing: -0.03em;
+    margin: 0;
+    line-height: 1.2;
+}
+.page-subtitle {
+    font-family: 'Source Serif 4', serif;
+    font-style: italic;
+    font-size: 0.95rem;
+    color: #8a8278;
+    margin: 6px 0 0 0;
+}
+
+/* Column gap tightening */
+[data-testid="stHorizontalBlock"] { gap: 24px !important; }
 </style>
-""", unsafe_allow_html=True)
+"""
+
+# --- Role definitions (title + one-line description) ---
+# Each entry becomes a selector card on the profile screen.
+ROLES = [
+    ("Investor / Trader",           "Markets, earnings, macro signals"),
+    ("Tech Professional",           "Products, engineering, industry moves"),
+    ("Startup Founder",             "Funding, competitors, market shifts"),
+    ("Student",                     "Learning-oriented, broad context"),
+    ("Business Executive",          "Strategy, M&A, sector trends"),
+    ("Policy / Government",         "Regulation, economy, geopolitics"),
+    ("Journalist / Media",          "Story angles, sources, breaking news"),
+    ("General Reader",              "Curious, no specific vertical"),
+]
+
+# --- Suggested interest pills (shown beneath the multiselect) ---
+# Clicking a pill adds it to the multiselect selection.
+ALL_INTERESTS = [
+    "Technology", "Stock Markets", "Startups", "AI / Machine Learning",
+    "Economy / Finance", "Crypto / Blockchain", "Geopolitics", "Healthcare",
+    "Climate / Energy", "Sports", "Entertainment", "Science",
+    "Real Estate", "Education",
+]
+SUGGESTED_PILLS = ["Technology", "AI / Machine Learning", "Stock Markets",
+                   "Startups", "Economy / Finance", "Geopolitics"]
 
 
 def init_session_state():
-    """Initialize session state variables."""
+    """Initialize all session state variables with defaults."""
     defaults = {
         "step": "profile",         # profile -> loading -> briefing
         "profile": None,
@@ -56,72 +597,174 @@ def init_session_state():
         "chat_history": [],
         "briefing_audio": None,
         "last_response_audio": None,
-        "pipeline_running": False, # guard against double pipeline execution on rerun
-        "last_audio_hash": None,   # dedup: skip reprocessing same audio bytes on rerun
+        # Role/interest selectors (profile page state)
+        "selected_role": ROLES[0][0],
+        "selected_interests": {"Technology", "AI / Machine Learning"},
+        # Pipeline guard: prevents double execution on Streamlit reruns
+        "pipeline_running": False,
+        # Audio dedup: skip reprocessing same recording on every rerun
+        "last_audio_hash": None,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = val
 
 
+# =============================================================================
+# PROFILE PAGE
+# =============================================================================
+
+def render_role_selector():
+    """
+    Render 8 role cards in a 2-column CSS grid.
+
+    Streamlit limitation: there is no native radio-card widget.
+    Workaround: inject the card HTML and capture selection via
+    st.session_state + st.button (one hidden button per card).
+    Since clicking inside an HTML block can't trigger Python,
+    we render each card as a full st.button call wrapped in a
+    CSS class that styles it like a card.
+    """
+    # Build the role grid using columns of buttons.
+    # Two buttons per row to mimic a 2-col card grid.
+    st.markdown('<span class="pill-section-label">Your role</span>', unsafe_allow_html=True)
+    rows = [ROLES[i:i+2] for i in range(0, len(ROLES), 2)]
+    for row in rows:
+        cols = st.columns(len(row))
+        for col, (role_title, role_desc) in zip(cols, row):
+            is_selected = st.session_state.selected_role == role_title
+            # CSS class applied via a container div injected before the button
+            selected_class = "role-card selected" if is_selected else "role-card"
+            # Render the card as styled HTML + a transparent button overlay.
+            # The button click updates session state; the HTML provides visual style.
+            col.markdown(f"""
+            <div class="{selected_class}">
+                <span class="role-title">{role_title}</span>
+                <span class="role-desc">{role_desc}</span>
+            </div>
+            """, unsafe_allow_html=True)
+            # Invisible select button — width fills the card column
+            if col.button("select", key=f"role_{role_title}", use_container_width=True):
+                st.session_state.selected_role = role_title
+                st.rerun()
+
+    # Streamlit limitation: the HTML card and the button are separate elements,
+    # so the button renders below the card. We push the button up using negative
+    # margin via injected CSS so it visually overlays the card.
+    st.markdown("""
+    <style>
+    /* Pull each role-select button up to overlap its card above */
+    [data-testid="stHorizontalBlock"] [data-testid="stButton"] > button {
+        margin-top: -62px !important;
+        height: 58px !important;
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        opacity: 0 !important;
+        cursor: pointer !important;
+    }
+    [data-testid="stHorizontalBlock"] [data-testid="stButton"] > button:hover {
+        opacity: 0 !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+
+def render_interest_pills(current_interests: set) -> set:
+    """
+    Render quick-add suggestion pills beneath the multiselect.
+    Returns the (possibly updated) interest set.
+
+    Streamlit limitation: buttons cause a full rerun, so pill
+    clicks update session_state.selected_interests then rerun.
+    The multiselect is initialized from this same state key so
+    they stay in sync.
+    """
+    st.markdown('<span class="pill-section-label">Quick add</span>', unsafe_allow_html=True)
+    st.markdown('<div class="pill-row">', unsafe_allow_html=True)
+
+    # Render pills as a horizontal flow using columns
+    cols = st.columns(len(SUGGESTED_PILLS))
+    for col, pill in zip(cols, SUGGESTED_PILLS):
+        is_active = pill in current_interests
+        # Apply active class by wrapping in a div — same overlay trick as role cards
+        if is_active:
+            col.markdown(f'<div class="pill-row-active">', unsafe_allow_html=True)
+        if col.button(("+ " if not is_active else "✓ ") + pill, key=f"pill_{pill}"):
+            updated = set(current_interests)
+            if pill in updated:
+                updated.discard(pill)
+            else:
+                updated.add(pill)
+            st.session_state.selected_interests = updated
+            st.rerun()
+        if is_active:
+            col.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown('</div>', unsafe_allow_html=True)
+    return current_interests
+
+
 def render_profile_page():
-    """Step 1: Collect user profile."""
-    st.markdown("<h1 class='main-header'>🎙️ MyET AI — Voice News Companion</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align:center; color: #b2bec3;'>News that adapts to you. Delivered by voice.</p>", unsafe_allow_html=True)
+    """Step 1: Collect user profile with card-based role selector and interest pills."""
+    st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
 
-    st.markdown("---")
-    st.subheader("Tell us about yourself")
-    st.caption("This helps us personalize your news experience.")
+    # Page header
+    st.markdown("""
+    <div style="padding: 32px 0 8px 0;">
+        <p class="page-title">MyET AI</p>
+        <p class="page-subtitle">Voice-first news intelligence, personalized to you.</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-    col1, col2 = st.columns(2)
+    st.markdown('<div class="section-label">Your profile</div>', unsafe_allow_html=True)
+
+    col1, col2 = st.columns([1, 1])
 
     with col1:
-        name = st.text_input("Your name", placeholder="e.g., Gurnoor")
-        role = st.selectbox("What best describes you?", [
-            "Investor / Trader",
-            "Tech Professional",
-            "Startup Founder / Entrepreneur",
-            "Student",
-            "Business Executive",
-            "Policy / Government",
-            "Journalist / Media",
-            "General Reader",
-        ])
+        # Name field
+        st.markdown('<span class="pill-section-label">Name</span>', unsafe_allow_html=True)
+        name = st.text_input("Name", placeholder="e.g., Gurnoor", label_visibility="collapsed")
+
+        # Role selector cards
+        render_role_selector()
 
     with col2:
-        interests = st.multiselect("Topics you care about", [
-            "Technology",
-            "Stock Markets",
-            "Startups",
-            "AI / Machine Learning",
-            "Economy / Finance",
-            "Crypto / Blockchain",
-            "Geopolitics",
-            "Healthcare",
-            "Climate / Energy",
-            "Sports",
-            "Entertainment",
-            "Science",
-            "Real Estate",
-            "Education",
-        ], default=["Technology", "AI / Machine Learning"])
+        # Multiselect — initialized from session state so pills stay in sync
+        st.markdown('<span class="pill-section-label">Topics you care about</span>', unsafe_allow_html=True)
+        interests = st.multiselect(
+            "Topics",
+            ALL_INTERESTS,
+            default=list(st.session_state.selected_interests),
+            key="interests_multiselect",
+            label_visibility="collapsed",
+        )
+        # Keep session state in sync with multiselect (user may have deselected via the widget)
+        st.session_state.selected_interests = set(interests)
 
+        # Interest suggestion pills
+        render_interest_pills(st.session_state.selected_interests)
+
+        # Briefing depth slider
+        st.markdown('<span class="pill-section-label" style="margin-top:16px; display:block;">Briefing depth</span>', unsafe_allow_html=True)
         depth = st.select_slider(
-            "How detailed should your briefing be?",
+            "Depth",
             options=["brief", "medium", "detailed"],
             value="medium",
+            label_visibility="collapsed",
         )
 
-    st.markdown("---")
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-    if st.button("🚀 Generate My Briefing", type="primary", use_container_width=True):
+    # CTA button
+    if st.button("Generate briefing", type="primary", use_container_width=True):
         if not name:
-            st.warning("Please enter your name!")
+            st.warning("Enter your name to continue.")
             return
 
         profile = UserProfile(
             name=name,
-            role=role,
+            role=st.session_state.selected_role,
             interests=[i.lower() for i in interests],
             preferred_depth=depth,
         )
@@ -130,181 +773,389 @@ def render_profile_page():
         st.rerun()
 
 
+# =============================================================================
+# LOADING PAGE
+# =============================================================================
+
+# Pipeline stage definitions: (label, detail_fn)
+# detail_fn receives the previous stage's output count (or None) and returns
+# the detail string shown in the "detail" column while the stage is running.
+PIPELINE_STAGES = [
+    ("Ingestion",        "Fetching articles from NewsAPI + ET RSS"),
+    ("Understanding",    "Extracting topics, entities, sentiment"),
+    ("Profiling",        "Expanding user preference model"),
+    ("Personalization",  "Scoring articles for relevance"),
+    ("Briefing",         "Generating conversational summary"),
+]
+# Status symbols (Unicode, no emoji)
+SYM_PENDING = "·"
+SYM_RUNNING = "▶"
+SYM_DONE    = "✓"
+SYM_ERROR   = "✗"
+
+
+def _stage_html(idx: int, statuses: list, details: list) -> str:
+    """
+    Render the pipeline log HTML.
+    statuses: list of 'pending'|'running'|'done'|'error' strings
+    details:  list of detail strings (shown in right column)
+    """
+    rows_html = ""
+    for i, (label, _) in enumerate(PIPELINE_STAGES):
+        st_str = statuses[i]
+        sym = {"pending": SYM_PENDING, "running": SYM_RUNNING,
+               "done": SYM_DONE, "error": SYM_ERROR}.get(st_str, SYM_PENDING)
+        detail = details[i] or ""
+        rows_html += f"""
+        <div class="stage-row">
+            <span class="stage-status {st_str}">{sym}</span>
+            <span class="stage-name {st_str}">{i+1}. {label}</span>
+            <span class="stage-detail {st_str}">{detail}</span>
+        </div>"""
+
+    return f"""
+    <div class="pipeline-log">
+        <div class="pipeline-log-header">
+            <span>Pipeline</span>
+            <span>{sum(1 for s in statuses if s == 'done')}/{len(PIPELINE_STAGES)} complete</span>
+        </div>
+        {rows_html}
+    </div>"""
+
+
 def render_loading_page():
-    """Step 2: Run pipeline with progress."""
-    st.markdown("<h1 class='main-header'>🎙️ MyET AI</h1>", unsafe_allow_html=True)
+    """
+    Step 2: Run each of the 5 pipeline agents with a live log.
+    Each stage transitions: pending -> running -> done (or error).
+    The log is a single st.empty() block updated in-place.
+    """
+    st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
+
+    st.markdown("""
+    <div style="padding: 24px 0 4px 0;">
+        <p class="page-title">MyET AI</p>
+    </div>
+    """, unsafe_allow_html=True)
 
     profile = st.session_state.profile
 
     # Guard: if a rerun fires while the pipeline is already running
     # (e.g. browser heartbeat), don't start a second execution
     if st.session_state.get("pipeline_running"):
-        st.info(f"Preparing your personalized briefing, {profile.name}...")
         st.spinner("Pipeline is running...")
         return
 
     st.session_state.pipeline_running = True
-    st.info(f"Preparing your personalized briefing, {profile.name}...")
-    progress = st.progress(0, text="Starting pipeline...")
+
+    st.markdown(
+        f'<p style="font-family:\'IBM Plex Mono\',monospace;font-size:0.8rem;color:#8a8278;">'
+        f'Building briefing for {profile.name} &mdash; {profile.role}</p>',
+        unsafe_allow_html=True,
+    )
+
+    # Initialize stage tracking
+    statuses = ["pending"] * len(PIPELINE_STAGES)
+    details  = [""] * len(PIPELINE_STAGES)
+
+    log_placeholder = st.empty()
+
+    def update_log():
+        log_placeholder.markdown(_stage_html(0, statuses, details), unsafe_allow_html=True)
+
+    update_log()
 
     try:
-        # run_pipeline() handles agents 1-5 in sequence with rate-limit gaps
-        # (pipeline.py enforces _CALL_GAP = 6s between LLM calls)
-        progress.progress(10, text="📡 Fetching + analyzing + personalizing...")
-        from pipeline import run_pipeline
-        briefing = run_pipeline(profile)
+        # ── Stage 0: Ingestion ──────────────────────────────────────────────
+        statuses[0] = "running"
+        details[0]  = "connecting..."
+        update_log()
 
-        progress.progress(95, text="🎙️ Preparing voice...")
+        from agents.ingestion import ingest
+        articles = ingest(interests=profile.interests)
+
+        if not articles:
+            statuses[0] = "error"
+            details[0]  = "no articles returned"
+            update_log()
+            st.session_state.pipeline_running = False
+            st.error("Could not fetch articles. Check API keys or internet connection.")
+            if st.button("← Back to profile"):
+                st.session_state.step = "profile"
+                st.rerun()
+            return
+
+        statuses[0] = "done"
+        details[0]  = f"{len(articles)} articles fetched"
+        update_log()
+
+        # ── Stage 1: Understanding ──────────────────────────────────────────
+        statuses[1] = "running"
+        details[1]  = f"analyzing {len(articles)} articles..."
+        update_log()
+
+        from agents.understanding import understand
+        analyzed = understand(articles)
+
+        statuses[1] = "done"
+        details[1]  = f"{len(analyzed)} articles analyzed"
+        update_log()
+
+        # ── Stage 2: Profiling ──────────────────────────────────────────────
+        statuses[2] = "running"
+        details[2]  = "interpreting preferences..."
+        update_log()
+
+        from agents.profiling import interpret_profile
+        profile_data = interpret_profile(profile)
+
+        statuses[2] = "done"
+        details[2]  = "profile expanded"
+        update_log()
+
+        # ── Stage 3: Personalization ────────────────────────────────────────
+        statuses[3] = "running"
+        details[3]  = f"scoring {len(analyzed)} articles..."
+        update_log()
+
+        from agents.personalization import personalize
+        ranked = personalize(analyzed, profile, profile_data)
+
+        statuses[3] = "done"
+        details[3]  = f"top {min(3, len(ranked))} selected"
+        update_log()
+
+        # ── Stage 4: Briefing ───────────────────────────────────────────────
+        statuses[4] = "running"
+        details[4]  = "generating briefing text..."
+        update_log()
+
+        from agents.briefing import generate_briefing
+        briefing = generate_briefing(ranked, profile, profile_data)
+
+        statuses[4] = "done"
+        details[4]  = "ready"
+        update_log()
+
+        # ── TTS (not a named pipeline stage) ───────────────────────────────
         from agents.voice import text_to_speech
         audio_bytes = text_to_speech(briefing.summary_text)
 
-        st.session_state.briefing = briefing
+        st.session_state.briefing       = briefing
         st.session_state.briefing_audio = audio_bytes
-        progress.progress(100, text="✅ Done!")
-
         st.session_state.pipeline_running = False
-        st.session_state.step = "briefing"
+        st.session_state.step           = "briefing"
         st.rerun()
 
     except Exception as e:
+        # Mark the current running stage as error
+        for i, s in enumerate(statuses):
+            if s == "running":
+                statuses[i] = "error"
+                details[i]  = str(e)[:40]
+        update_log()
         st.session_state.pipeline_running = False
         st.error(f"Pipeline error: {e}")
-        if st.button("← Go Back"):
+        if st.button("← Back to profile"):
             st.session_state.step = "profile"
             st.rerun()
 
 
+# =============================================================================
+# BRIEFING PAGE
+# =============================================================================
+
+def _sentiment_class(sentiment: str) -> str:
+    """Map sentiment string to CSS class for left-border color."""
+    mapping = {
+        "positive": "sentiment-positive",
+        "negative": "sentiment-negative",
+    }
+    return mapping.get(sentiment.lower(), "sentiment-neutral")
+
+
+def _relevance_badge(score: float) -> str:
+    """Return HTML for the relevance badge based on score."""
+    if score >= 0.7:
+        return f'<span class="relevance-badge badge-high">{score:.0%} match</span>'
+    elif score >= 0.4:
+        return f'<span class="relevance-badge badge-med">{score:.0%} match</span>'
+    else:
+        return f'<span class="relevance-badge badge-low">{score:.0%} match</span>'
+
+
+def render_article_card(idx: int, article) -> None:
+    """
+    Render a single article card with:
+    - Sentiment-coded left border (green/grey/red — no emoji icons)
+    - H3-weight title via .article-title
+    - Small/muted metadata row (source, date, topics) — nothing in between
+    - Relevance badge using color-coded pill
+    - 'Why it matters' in italic below a hairline rule
+    """
+    sentiment_class = _sentiment_class(article.sentiment)
+    badge_html      = _relevance_badge(article.relevance_score)
+
+    # Truncate description to avoid wall-of-text
+    description = (article.description[:220] + "…") if len(article.description) > 220 else article.description
+
+    # Published date — shorten to date only if it contains a T (ISO format)
+    pub_date = article.published_at.split("T")[0] if "T" in article.published_at else article.published_at
+
+    topics_str = " · ".join(article.topics[:4]) if article.topics else ""
+
+    st.markdown(f"""
+    <div class="article-card {sentiment_class}">
+        <h3 class="article-title">{idx}. {article.title}</h3>
+        <div class="article-meta">
+            {badge_html}
+            <span class="article-source">{article.source}</span>
+            {'<span class="article-date">' + pub_date + '</span>' if pub_date else ''}
+            {'<span class="article-topics">' + topics_str + '</span>' if topics_str else ''}
+        </div>
+        <p class="article-body">{description}</p>
+        {'<p class="article-insight">' + article.why_it_matters + '</p>' if article.why_it_matters else ''}
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def render_chat_thread() -> None:
+    """
+    Render the full chat history as a message thread.
+    User bubbles are right-aligned; AI bubbles left-aligned.
+    Always fully visible — no collapse, no hover-to-reveal.
+    """
+    history = st.session_state.chat_history
+
+    if not history:
+        thread_inner = '<div class="chat-empty">No messages yet. Ask a question below.</div>'
+    else:
+        bubbles = ""
+        for msg in history:
+            if msg["role"] == "user":
+                bubbles += f"""
+                <div class="chat-bubble chat-bubble-user">
+                    <div class="bubble-label">You</div>
+                    {msg['content']}
+                </div>"""
+            else:
+                bubbles += f"""
+                <div class="chat-bubble chat-bubble-ai">
+                    <div class="bubble-label">MyET AI</div>
+                    {msg['content']}
+                </div>"""
+        thread_inner = bubbles
+
+    st.markdown(f'<div class="chat-thread">{thread_inner}</div>', unsafe_allow_html=True)
+
+
 def render_briefing_page():
-    """Step 3: Show briefing + voice player + Q&A."""
+    """Step 3: Briefing audio player, article cards, and conversational Q&A thread."""
+    st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
+
     briefing = st.session_state.briefing
-    profile = st.session_state.profile
+    profile  = st.session_state.profile
 
-    # Header
-    st.markdown("<h1 class='main-header'>🎙️ Your Personalized Briefing</h1>", unsafe_allow_html=True)
-    st.markdown(f"<p style='text-align:center; color:#b2bec3;'>Tailored for {profile.name} — {profile.role}</p>", unsafe_allow_html=True)
+    # ── Page header ─────────────────────────────────────────────────────────
+    st.markdown(f"""
+    <div style="padding: 28px 0 4px 0;">
+        <p class="page-title">Your Briefing</p>
+        <p class="page-subtitle">{profile.name} &mdash; {profile.role}</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-    # Voice Player
-    st.markdown("---")
-    st.subheader("🔊 Listen to Your Briefing")
-
+    # ── Audio player — focal point, generous whitespace ──────────────────────
+    # Design decision: the briefing is primarily an audio experience;
+    # the player gets its own dedicated card with a labelled header so
+    # users immediately know where to interact.
+    st.markdown('<div class="section-label">Audio briefing</div>', unsafe_allow_html=True)
+    st.markdown('<div class="audio-section"><div class="audio-label">Listen to your briefing</div>', unsafe_allow_html=True)
     if st.session_state.briefing_audio:
         st.audio(st.session_state.briefing_audio, format="audio/mp3")
+    else:
+        st.markdown('<p style="font-family:\'IBM Plex Mono\',monospace;font-size:0.8rem;color:#4a4440;">Audio unavailable.</p>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
-    with st.expander("📄 Read the briefing text", expanded=False):
-        st.write(briefing.summary_text)
+    # Transcript in expander — secondary to audio
+    with st.expander("Read transcript", expanded=False):
+        st.markdown(f'<p style="font-family:\'Source Serif 4\',serif;font-size:0.92rem;color:#b0a898;line-height:1.7;">{briefing.summary_text}</p>', unsafe_allow_html=True)
 
-    # Article Cards
-    st.markdown("---")
-    st.subheader("📰 Top Stories For You")
-
+    # ── Article cards ────────────────────────────────────────────────────────
+    st.markdown('<div class="section-label">Top stories</div>', unsafe_allow_html=True)
     for i, article in enumerate(briefing.top_articles, 1):
-        score = article.relevance_score
-        if score >= 0.7:
-            badge_class = "high-relevance"
-            badge_text = f"Relevance: {score:.0%}"
-        elif score >= 0.4:
-            badge_class = "med-relevance"
-            badge_text = f"Relevance: {score:.0%}"
-        else:
-            badge_class = "low-relevance"
-            badge_text = f"Relevance: {score:.0%}"
+        render_article_card(i, article)
 
-        # Escape all dynamic values before injecting into HTML —
-        # RSS titles/descriptions can contain <script> tags or HTML entities
-        title_safe = html_lib.escape(article.title)
-        source_safe = html_lib.escape(article.source)
-        desc_safe = html_lib.escape(article.description[:200])
-        why_safe = html_lib.escape(article.why_it_matters)
-        topics_safe = html_lib.escape(", ".join(article.topics))
-        sentiment_safe = html_lib.escape(article.sentiment)
+    # ── Q&A section ──────────────────────────────────────────────────────────
+    st.markdown('<div class="section-label">Ask a follow-up</div>', unsafe_allow_html=True)
+    st.markdown('<p style="font-family:\'Source Serif 4\',serif;font-style:italic;font-size:0.82rem;color:#4a4440;margin-bottom:10px;">Ask about any story, request context, or explore a topic further.</p>', unsafe_allow_html=True)
 
-        st.markdown(f"""
-        <div class='article-card'>
-            <h4>{i}. {title_safe}</h4>
-            <span class='relevance-badge {badge_class}'>{badge_text}</span>
-            &nbsp;&nbsp;<span style='color:#b2bec3;'>{source_safe}</span>
-            <p style='margin-top:0.5rem;'>{desc_safe}</p>
-            <p style='color:#6c5ce7; font-style:italic;'>💡 {why_safe}</p>
-            <small>Topics: {topics_safe} | Sentiment: {sentiment_safe}</small>
-        </div>
-        """, unsafe_allow_html=True)
+    render_chat_thread()
 
-    # Interactive Q&A Section
-    st.markdown("---")
-    st.subheader("💬 Ask Me Anything")
-    st.caption("Ask follow-up questions about any article, or request a deeper explanation.")
-
-    # Chat history display — escape content to prevent XSS
-    for msg in st.session_state.chat_history:
-        content_safe = html_lib.escape(msg["content"])
-        if msg["role"] == "user":
-            st.markdown(f"<div class='chat-msg user-msg'>🗣️ <b>You:</b> {content_safe}</div>", unsafe_allow_html=True)
-        else:
-            st.markdown(f"<div class='chat-msg ai-msg'>🤖 <b>MyET AI:</b> {content_safe}</div>", unsafe_allow_html=True)
-
-    # Voice input section
+    # Input row: voice + text
     col_voice, col_text = st.columns([1, 2])
 
     with col_voice:
         try:
             from audio_recorder_streamlit import audio_recorder
             from agents.voice import speech_to_text
+            # Streamlit limitation: audio_recorder renders its own button with
+            # no CSS class hook; we wrap it in a div for minimal styling.
+            st.markdown('<div style="margin-top:4px;">', unsafe_allow_html=True)
             recorded = audio_recorder(
-                text="🎤 Tap to speak",
-                recording_color="#6c5ce7",
-                neutral_color="#b2bec3",
+                text="Speak",
+                recording_color="#c8a96e",
+                neutral_color="#4a4440",
                 pause_threshold=2.0,
             )
+            st.markdown('</div>', unsafe_allow_html=True)
             if recorded:
                 # Dedup: audio_recorder returns the same bytes on every Streamlit
-                # rerun until new audio is recorded — skip if we already processed this
+                # rerun until new audio is recorded — skip already-processed audio
                 audio_hash = hashlib.md5(recorded).hexdigest()
                 if audio_hash != st.session_state.get("last_audio_hash"):
                     st.session_state.last_audio_hash = audio_hash
                     with st.spinner("Transcribing..."):
                         user_text = speech_to_text(recorded)
                     if user_text:
-                        st.success(f"Heard: {user_text}")
-                        # Pass raw audio too — Gemini Live uses it directly,
+                        # Pass raw audio bytes — Gemini Live uses them directly,
                         # bypassing Google Free STT quality issues
                         process_user_question(user_text, audio_bytes=recorded)
                     else:
-                        st.warning("⚠️ Couldn't transcribe audio. Type your question below instead.")
+                        st.caption("Could not transcribe. ffmpeg may not be installed.")
         except ImportError:
-            st.info("Voice input requires audio-recorder-streamlit package.")
+            st.caption("Voice input requires audio-recorder-streamlit.")
 
     with col_text:
-        st.text_input("Or type your question:", key="chat_input", placeholder="e.g., Tell me more about article 1")
-        if st.button("Send", key="send_btn"):
-            # Read directly from session_state — reliable after button click rerun
+        st.text_input("Question", key="chat_input",
+                      placeholder="e.g., Why does this matter for Indian markets?",
+                      label_visibility="collapsed")
+        if st.button("Send", key="send_btn", type="primary"):
             question = st.session_state.get("chat_input", "").strip()
             if question:
                 process_user_question(question)
 
-    # Sidebar controls
+    # ── Sidebar ──────────────────────────────────────────────────────────────
     with st.sidebar:
-        st.markdown("### Controls")
-        if st.button("🔄 New Briefing", use_container_width=True):
-            st.session_state.step = "profile"
-            st.session_state.briefing = None
-            st.session_state.chat_history = []
+        st.markdown('<p style="font-family:\'IBM Plex Mono\',monospace;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.1em;color:#4a4440;margin-bottom:14px;">Controls</p>', unsafe_allow_html=True)
+        if st.button("New briefing", use_container_width=True):
+            st.session_state.step           = "profile"
+            st.session_state.briefing       = None
+            st.session_state.chat_history   = []
             st.session_state.briefing_audio = None
             st.rerun()
 
-        st.markdown("---")
-        st.markdown("### About")
+        st.markdown('<hr/>', unsafe_allow_html=True)
         st.markdown("""
-        **MyET AI + Voice Companion**
+        <p style="font-family:'IBM Plex Mono',monospace;font-size:0.65rem;color:#4a4440;line-height:1.8;">
+        MyET AI + Voice Companion<br>
+        Multi-agent news intelligence<br><br>
+        ET AI Hackathon — Track 8
+        </p>
+        """, unsafe_allow_html=True)
 
-        A multi-agent AI system that:
-        - Ingests real-time news
-        - Understands content deeply
-        - Personalizes for YOU
-        - Delivers via voice
 
-        *Built for ET AI Hackathon — Track 8*
-        """)
-
+# =============================================================================
+# Q&A HANDLER
+# =============================================================================
 
 def process_user_question(question: str, audio_bytes: bytes = None):
     """
@@ -315,7 +1166,7 @@ def process_user_question(question: str, audio_bytes: bytes = None):
     question:    text of the question (always required for chat history display).
     """
     briefing = st.session_state.briefing
-    profile = st.session_state.profile
+    profile  = st.session_state.profile
 
     # Snapshot history BEFORE appending current question.
     # answer_question() adds "User's question: {question}" separately,
@@ -359,22 +1210,22 @@ def process_user_question(question: str, audio_bytes: bytes = None):
             chat_history=history_snapshot,  # snapshot without current question
         )
     except Exception as e:
-        response = f"Sorry, I couldn't process that right now. ({e})"
-        print(f"[Q&A] Error: {e}")
+        response = f"Unable to process your question. ({e})"
 
     st.session_state.chat_history.append({"role": "assistant", "content": response})
 
     try:
-        audio = text_to_speech(response)
-        st.session_state.last_response_audio = audio
-    except Exception as e:
-        print(f"[Voice] TTS error for Q&A response: {e}")
+        st.session_state.last_response_audio = text_to_speech(response)
+    except Exception:
         st.session_state.last_response_audio = None
 
     st.rerun()
 
 
-# --- Main ---
+# =============================================================================
+# MAIN
+# =============================================================================
+
 def main():
     init_session_state()
 
@@ -384,9 +1235,8 @@ def main():
         render_loading_page()
     elif st.session_state.step == "briefing":
         render_briefing_page()
-
-        # Auto-play last response audio
-        if "last_response_audio" in st.session_state and st.session_state.last_response_audio:
+        # Auto-play last Q&A response audio at page bottom
+        if st.session_state.get("last_response_audio"):
             st.audio(st.session_state.last_response_audio, format="audio/mp3")
             st.session_state.last_response_audio = None
 
