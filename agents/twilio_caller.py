@@ -131,18 +131,21 @@ def initiate_call(phone_number: str, briefing: Briefing, profile: UserProfile) -
                       the Twilio SDK is not installed, or if the Twilio API
                       returns an error.
     """
-    # Guard: all three Twilio vars must be set before attempting a call.
+    # Guard: all required config vars must be set before attempting a call.
+    # ELEVENLABS_AGENT_ID is included — without it the TwiML URL is invalid
+    # and the call connects silently (rings then plays nothing).
     # Missing keys are reported together so the user can fix them all at once.
     missing = [
         k for k, v in {
-            "TWILIO_ACCOUNT_SID": TWILIO_ACCOUNT_SID,
-            "TWILIO_AUTH_TOKEN":  TWILIO_AUTH_TOKEN,
-            "TWILIO_FROM_NUMBER": TWILIO_FROM_NUMBER,
+            "TWILIO_ACCOUNT_SID":  TWILIO_ACCOUNT_SID,
+            "TWILIO_AUTH_TOKEN":   TWILIO_AUTH_TOKEN,
+            "TWILIO_FROM_NUMBER":  TWILIO_FROM_NUMBER,
+            "ELEVENLABS_AGENT_ID": ELEVENLABS_AGENT_ID,
         }.items()
         if not v
     ]
     if missing:
-        raise RuntimeError(f"Missing Twilio config: {', '.join(missing)}")
+        raise RuntimeError(f"Missing config: {', '.join(missing)}")
 
     # Pre-seed Tony with the briefing context (best-effort, does not raise).
     # Tony will still answer if this step fails — he just won't have context.

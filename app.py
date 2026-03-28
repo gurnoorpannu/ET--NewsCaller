@@ -573,8 +573,9 @@ def init_session_state():
         "selected_interests": {"Technology", "AI / Machine Learning"},
         # Pipeline guard: prevents double execution on Streamlit reruns
         "pipeline_running": False,
-        # Phone number persisted across reruns so user doesn't re-type after scheduling
-        "call_phone_number": "",
+        # Phone number persisted across reruns via the widget's own key.
+        # Streamlit stores st.text_input(key="phone_input_field") value here.
+        "phone_input_field": "",
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -1239,15 +1240,15 @@ def render_briefing_page():
     col_phone, col_actions = st.columns([2, 1])
 
     with col_phone:
-        # Phone input persists across reruns so user doesn't retype after scheduling
+        # Streamlit stores the widget value in st.session_state["phone_input_field"].
+        # Initialised in init_session_state() so it persists across reruns without
+        # the value=... / key=... conflict that causes the input to reset on click.
         phone_input = st.text_input(
             "Phone number",
-            value=st.session_state.get("call_phone_number", ""),
             placeholder="+919876543210",
             label_visibility="collapsed",
             key="phone_input_field",
         )
-        st.session_state.call_phone_number = phone_input
 
     with col_actions:
         if st.button("Call Me Now", type="primary", use_container_width=True, key="call_now_btn"):
