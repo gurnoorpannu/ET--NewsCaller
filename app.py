@@ -216,6 +216,7 @@ hr {
     border: 1px solid #2a2a2a;
     border-radius: 6px;
     padding: 10px 14px;
+    min-height: 72px;
     cursor: pointer;
     transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
     user-select: none;
@@ -606,7 +607,8 @@ def init_session_state():
         "last_audio_hash": None,
         # Voice provider toggle: "gemini_live" or "elevenlabs"
         # Controls which AI handles Q&A voice responses
-        "voice_provider": "gemini_live",
+        # Default: elevenlabs — more reliable (no ffmpeg needed, text-in/audio-out)
+        "voice_provider": "elevenlabs",
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -657,14 +659,18 @@ def render_role_selector():
     st.markdown("""
     <style>
     /* Pull each role-select button up to overlap its card above */
+    /* NOTE: role buttons are rendered as transparent overlays on the styled card HTML.
+       The previous values were narrowly sized leading to poor hit area and repeated clicks.
+       Increase coverage and add z-index so each role card is fully clickable on first tap. */
     [data-testid="stHorizontalBlock"] [data-testid="stButton"] > button {
-        margin-top: -62px !important;
-        height: 58px !important;
+        margin-top: -80px !important;
+        height: 80px !important;
         background: transparent !important;
         border: none !important;
         box-shadow: none !important;
         opacity: 0 !important;
         cursor: pointer !important;
+        z-index: 2 !important;
     }
     [data-testid="stHorizontalBlock"] [data-testid="stButton"] > button:hover {
         opacity: 0 !important;
@@ -858,6 +864,21 @@ def render_loading_page():
 
     st.session_state.pipeline_running = True
 
+    # ── Cache check: skip the whole pipeline if today's briefing is on disk ──
+    # This is very useful during development — re-running the app after code
+    # changes won't waste API quota or time re-fetching & re-analyzing news.
+    from utils.briefing_cache import load_cached_briefing, save_briefing_to_cache
+    cached_briefing = load_cached_briefing(profile)
+    if cached_briefing is not None:
+        from agents.voice import text_to_speech
+        audio_bytes = text_to_speech(cached_briefing.summary_text)
+        st.session_state.briefing       = cached_briefing
+        st.session_state.briefing_audio = audio_bytes
+        st.session_state.pipeline_running = False
+        st.session_state.step           = "briefing"
+        st.rerun()
+        return
+
     st.markdown(
         f'<p style="font-family:\'IBM Plex Mono\',monospace;font-size:0.8rem;color:#8a8278;">'
         f'Building briefing for {profile.name} &mdash; {profile.role}</p>',
@@ -950,6 +971,9 @@ def render_loading_page():
         # ── TTS (not a named pipeline stage) ───────────────────────────────
         from agents.voice import text_to_speech
         audio_bytes = text_to_speech(briefing.summary_text)
+
+        # Save to disk cache so re-runs today skip the pipeline entirely
+        save_briefing_to_cache(profile, briefing)
 
         st.session_state.briefing       = briefing
         st.session_state.briefing_audio = audio_bytes
@@ -1171,8 +1195,8 @@ def render_briefing_page():
         }
         _current_label = next(
             (k for k, v in _PROVIDER_OPTIONS.items()
-             if v == st.session_state.get("voice_provider", "gemini_live")),
-            "Gemini Live",
+             if v == st.session_state.get("voice_provider", "elevenlabs")),
+            "ElevenLabs (Tony)",
         )
         # st.radio persists the choice across Streamlit reruns via session state
         selected_label = st.radio(
@@ -1197,6 +1221,48 @@ def render_briefing_page():
                 'monospace;margin-top:4px;">Text in → Tony (ElevenLabs) voice out</p>',
                 unsafe_allow_html=True,
             )
+
+        # ── Twilio call section ───────────────────────────────────────────────
+        # Lets the user receive a phone call where the ElevenLabs agent
+        # delivers the briefing and handles live Q&A over voice.
+        st.markdown('<hr/>', unsafe_allow_html=True)
+        st.markdown(
+            '<p style="font-family:\'IBM Plex Mono\',monospace;font-size:0.7rem;'
+            'text-transform:uppercase;letter-spacing:0.1em;color:#8a8278;margin-bottom:8px;">'
+            'Call me</p>',
+            unsafe_allow_html=True,
+        )
+        phone_input = st.text_input(
+            "Phone number",
+            placeholder="+919876543210",
+            key="twilio_phone",
+            label_visibility="collapsed",
+        )
+        if st.button("Call me now", use_container_width=True, key="call_btn"):
+            phone = (phone_input or "").strip()
+            if not phone:
+                st.warning("Enter your phone number (E.164 format, e.g. +919876543210).")
+            else:
+                try:
+                    from agents.twilio_caller import initiate_call
+                    with st.spinner("Calling you..."):
+                        call_sid = initiate_call(
+                            to_number=phone,
+                            briefing=st.session_state.briefing,
+                            profile=st.session_state.profile,
+                        )
+                    st.success(f"Calling {phone}! Pick up — your AI briefing is on the way.")
+                except RuntimeError as call_err:
+                    st.error(f"Call failed: {call_err}")
+                except Exception as call_err:
+                    st.error(f"Unexpected error: {call_err}")
+
+        st.markdown(
+            '<p style="font-size:0.65rem;color:#4a4440;font-family:\'IBM Plex Mono\','
+            'monospace;margin-top:4px;line-height:1.6;">'
+            'Requires TWILIO_* and WEBHOOK_BASE_URL in .env</p>',
+            unsafe_allow_html=True,
+        )
 
         st.markdown('<hr/>', unsafe_allow_html=True)
         st.markdown("""
@@ -1233,18 +1299,21 @@ def process_user_question(question: str, audio_bytes: bytes = None):
     briefing = st.session_state.briefing
     profile  = st.session_state.profile
 
+    # Clear previous response audio so the old player disappears while we wait.
+    # The new audio will be set before st.rerun() so the player reappears.
+    st.session_state.last_response_audio = None
+
     # Snapshot history BEFORE appending current question.
     # answer_question() adds "User's question: {question}" separately,
     # so passing the post-append history would make the question appear twice.
     history_snapshot = list(st.session_state.chat_history)
     st.session_state.chat_history.append({"role": "user", "content": question})
 
-    provider = st.session_state.get("voice_provider", "gemini_live")
+    provider = st.session_state.get("voice_provider", "elevenlabs")
 
     # ── Path A: Gemini Live (audio in → audio out) ─────────────────────────
     # Only attempted when audio bytes are present (voice input was used) and
     # Gemini Live is the selected provider.
-    # Eliminates the 3-step STT→LLM→TTS chain with a single WebSocket session.
     if audio_bytes and provider == "gemini_live":
         try:
             from agents.gemini_live import gemini_live_answer
@@ -1261,39 +1330,39 @@ def process_user_question(question: str, audio_bytes: bytes = None):
             st.rerun()
             return
         except RuntimeError as e:
-            # Known failure modes: no ffmpeg, no API key, timeout
             st.warning(f"Voice Q&A unavailable ({e}). Using text mode.")
         except Exception as e:
             print(f"[GeminiLive] Unexpected error: {e}")
             st.warning("Voice Q&A error. Using text mode.")
 
-    # ── Path B: ElevenLabs Tony (text in → audio out) ──────────────────────
-    # Activated when ElevenLabs is the selected provider.
-    # Works for both voice input (STT text) and typed questions — no raw audio needed.
+    # ── Path B: ElevenLabs Conversational AI (briefing injected as system prompt)
+    # We override Tony's agent prompt per-session via ConversationInitiationData
+    # so he starts the session knowing the news. Old approach used
+    # send_contextual_update() which Tony ignored, causing the generic greeting.
     if provider == "elevenlabs":
         try:
             from agents.elevenlabs_convo import elevenlabs_convo_answer
-            with st.spinner("Tony is thinking..."):
+            with st.spinner("MyET AI is responding..."):
                 mp3_bytes, response_text = elevenlabs_convo_answer(
                     question=question,
                     briefing=briefing,
                     profile=profile,
                     chat_history=history_snapshot,
                 )
-            display_text = response_text if response_text else "[Voice response — press play above]"
+            display_text = response_text if response_text else "[Voice response — press play below]"
             st.session_state.chat_history.append({"role": "assistant", "content": display_text})
             st.session_state.last_response_audio = mp3_bytes
             st.rerun()
             return
         except RuntimeError as e:
-            st.warning(f"ElevenLabs unavailable ({e}). Using text mode.")
+            st.warning(f"ElevenLabs unavailable ({e}). Using text fallback.")
         except Exception as e:
             print(f"[ElevenLabs] Unexpected error: {e}")
-            st.warning("ElevenLabs error. Using text mode.")
+            st.warning("ElevenLabs error. Using text fallback.")
 
-    # ── Path C: Text fallback (original answer_question + TTS chain) ───────
-    # Used when: (a) Gemini Live is selected but no audio_bytes available,
-    #            (b) Gemini Live or ElevenLabs raised an error above.
+    # ── Path C: Text fallback (answer_question + gTTS) ──────────────────────
+    # Used when: (a) Gemini Live selected but no audio bytes,
+    #            (b) any path above raised an unhandled exception.
     from agents.conversation import answer_question
     from agents.voice import text_to_speech
     try:
@@ -1301,7 +1370,7 @@ def process_user_question(question: str, audio_bytes: bytes = None):
             question=question,
             briefing=briefing,
             profile=profile,
-            chat_history=history_snapshot,  # snapshot without current question
+            chat_history=history_snapshot,
         )
     except Exception as e:
         response = f"Unable to process your question. ({e})"
@@ -1329,10 +1398,14 @@ def main():
         render_loading_page()
     elif st.session_state.step == "briefing":
         render_briefing_page()
-        # Auto-play last Q&A response audio at page bottom
+        # Auto-play last Q&A response audio at page bottom.
+        # We render it here (outside render_briefing_page) so it appears below the
+        # chat thread after a rerun. We do NOT clear it here — clearing in the same
+        # render pass would destroy the bytes before Streamlit can serve the audio
+        # to the browser. Instead, process_user_question() overwrites it with the
+        # next response (or None if text-only fallback is used).
         if st.session_state.get("last_response_audio"):
             st.audio(st.session_state.last_response_audio, format="audio/mp3")
-            st.session_state.last_response_audio = None
 
 
 if __name__ == "__main__":
